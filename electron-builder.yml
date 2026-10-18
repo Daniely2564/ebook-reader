@@ -1,0 +1,53 @@
+appId: app.lumenreader
+productName: Lumen Reader
+copyright: Copyright © 2026 Lumen Reader
+directories:
+  output: release
+  buildResources: build
+files:
+  - dist/**/*
+  - electron/**/*
+  - package.json
+  # the renderer is fully bundled by Vite; no runtime node_modules are needed
+  - "!node_modules/**/*"
+asar: true
+fileAssociations:
+  - ext: epub
+    name: EPUB Book
+    mimeType: application/epub+zip
+    role: Viewer
+  - ext: pdf
+    name: PDF Document
+    mimeType: application/pdf
+    role: Viewer
+  - ext: [mobi, azw, azw3]
+    name: Kindle Book
+    mimeType: application/x-mobipocket-ebook
+    role: Viewer
+  - ext: fb2
+    name: FictionBook
+    mimeType: application/x-fictionbook+xml
+    role: Viewer
+  - ext: cbz
+    name: Comic Book
+    mimeType: application/vnd.comicbook+zip
+    role: Viewer
+linux:
+  target: [AppImage, deb]
+  category: Office
+  icon: build/icons
+  synopsis: Beautiful ebook reader with an offline dictionary
+  # TODO: replace with your own name and email before publishing
+  maintainer: Lumen Reader <maintainer@example.com>
+deb:
+  depends: [libnss3, libgtk-3-0, libxss1, libasound2t64 | libasound2]
+win:
+  target: [nsis]
+  icon: build/icon.png
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+mac:
+  target: [dmg]
+  category: public.app-category.books
+  icon: build/icon.png
