@@ -226,7 +226,7 @@ export const Reader = ({ bookId, target }: { bookId: string; target?: string }) 
       }
       setActiveAnn(null)
       if (s.isWord && getSettings().instantLookup) {
-        setLookup({ word: s.text, rect: s.rect, context: s.context, sel: s })
+        setLookup({ word: s.lookup ?? s.text, rect: s.rect, context: s.context, sel: s })
         setSelection(null)
       } else {
         setSelection(s)
@@ -638,7 +638,7 @@ export const Reader = ({ bookId, target }: { bookId: string; target?: string }) 
           onHighlight={c => createHighlight(selection, c)}
           onNote={() => setNoteFor({ draft: selection, color: 'yellow' })}
           onDefine={() => {
-            setLookup({ word: selection.text, rect: selection.rect, context: selection.context, sel: selection })
+            setLookup({ word: selection.lookup ?? selection.text, rect: selection.rect, context: selection.context, sel: selection })
             setSelection(null)
           }}
           onCopy={() => {

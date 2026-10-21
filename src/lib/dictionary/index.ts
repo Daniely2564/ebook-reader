@@ -49,10 +49,15 @@ export const lookupOffline = async (raw: string): Promise<DictResult[]> => {
   const { dictDisabled, translateTo } = getSettings()
   const off = new Set(dictDisabled)
   const myLang = translateTo.split('-')[0]
+  // one failing dictionary must not hide the others
+  const safe = <T>(p: Promise<T[]>, name: string) => p.catch(e => {
+    console.warn(`${name} lookup failed`, e)
+    return [] as T[]
+  })
   const [wk, wn, dicts, meta] = await Promise.all([
-    off.has(WIKTIONARY.id) ? [] : lookupWiktionaryOffline(raw),
-    off.has(WORDNET.id) ? [] : lookupWordNet(raw),
-    getUserDicts().catch(() => []),
+    off.has(WIKTIONARY.id) ? [] : safe(lookupWiktionaryOffline(raw), 'Wiktionary'),
+    off.has(WORDNET.id) ? [] : safe(lookupWordNet(raw), 'WordNet'),
+    safe(getUserDicts(), 'User dictionaries'),
     getDictMeta(),
   ])
   // lemma hints for the other dictionaries: "ran" → "run"

@@ -54,7 +54,8 @@ export interface Settings {
   ttsPitch: number
 }
 
-const defaultLang = (navigator.language || 'en').split('-')[0]
+const navLang = navigator.language || 'en'
+const defaultLang = navLang.startsWith('zh') ? (/TW|HK|MO|Hant/i.test(navLang) ? 'zh-TW' : 'zh-CN') : navLang.split('-')[0]
 
 export const DEFAULT_SETTINGS: Settings = {
   appTheme: 'system',
@@ -91,7 +92,7 @@ export const DEFAULT_SETTINGS: Settings = {
 
   instantLookup: true,
   onlineLookup: true,
-  translateTo: defaultLang === 'en' ? 'es' : defaultLang,
+  translateTo: defaultLang,
   dictTabs: {},
   dictDisabled: [],
 
@@ -116,7 +117,14 @@ export const useSettings = create<SettingsStore>()(
     }),
     {
       name: 'lumen-settings',
-      version: 1,
+      version: 2,
+      // v1 defaulted English speakers' Translate target to Spanish; it now also picks the
+      // language dictionary translations are shown in, so reset that untouched default
+      migrate: (state, version) => {
+        const s = state as Partial<Settings>
+        if (version < 2 && s.translateTo === 'es' && defaultLang === 'en') s.translateTo = 'en'
+        return s as SettingsStore
+      },
       storage: createJSONStorage(() => localStorage),
       partialize: ({ set: _set, reset: _reset, ...rest }) => rest,
     },

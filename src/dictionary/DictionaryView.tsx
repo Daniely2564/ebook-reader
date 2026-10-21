@@ -19,10 +19,12 @@ export const invalidateSavedWords = () => {
 }
 
 const firstDefinition = (r: DictResult | undefined) => {
-  const e = r?.entries[0]
+  // the word's own meaning ("better"), not its lemma's ("good") when it has one
+  const e = r?.entries.find(x => !x.formOf) ?? r?.entries[0]
   if (!e) return ''
-  if (e.meanings?.[0]?.senses[0]) return `(${e.meanings[0].pos}) ${e.meanings[0].senses[0].def}`
-  return e.html ? stripHtml(e.html).slice(0, 240) : ''
+  const via = e.formOf ? `${e.relation ? `${e.relation} of ` : '→ '}${e.word}: ` : ''
+  if (e.meanings?.[0]?.senses[0]) return `${via}(${e.meanings[0].pos}) ${e.meanings[0].senses[0].def}`
+  return e.html ? via + stripHtml(e.html).slice(0, 240) : ''
 }
 
 interface Props {
@@ -65,7 +67,10 @@ export const DictionaryView = ({ word: initial, context, lang, bookId, bookTitle
     setOnline({})
     setSuggestions([])
     setExpanded(false)
-    lookupOffline(word).then(res => {
+    lookupOffline(word).catch(e => {
+      console.warn('Lookup failed', e)
+      return [] as DictResult[]
+    }).then(res => {
       if (!alive) return
       setOffline(res)
       // prefer a user dictionary matching a non-English book
@@ -134,8 +139,12 @@ export const DictionaryView = ({ word: initial, context, lang, bookId, bookTitle
     : offline?.find(r => r.source.id === tab)
   const head = offline?.[0]?.entries[0]
   const headword = head && !head.formOf ? head.word : word
-  // pronunciation of the word itself, not of the lemma it was found under
-  const own = offline?.flatMap(r => r.entries).filter(e => !e.formOf && e.word === headword.toLowerCase())
+  // pronunciation of the word itself, not of the lemma it was found under; the built-in
+  // dictionaries are English, so for other books only imported dictionaries count
+  const own = offline
+    ?.filter(r => isEnglish || r.source.kind === 'user')
+    .flatMap(r => r.entries)
+    .filter(e => !e.formOf && e.word.toLowerCase() === headword.toLowerCase())
   const sounds = own?.find(e => e.ipa)
   const ipa = sounds?.ipa
   const ipaAlt = sounds?.ipaAlt
@@ -143,9 +152,16 @@ export const DictionaryView = ({ word: initial, context, lang, bookId, bookTitle
 
   const speak = async () => {
     if (onlineEnabled && recording) {
-      // a recorded pronunciation from Wikimedia Commons beats synthetic speech
-      const played = await new Audio(recording).play().then(() => true, () => false)
+      // a recorded pronunciation from Wikimedia Commons beats synthetic speech, unless
+      // it fails or doesn't start soon (slow or captive network)
+      const audio = new Audio(recording)
+      const played = await Promise.race([
+        audio.play().then(() => true, () => false),
+        new Promise<boolean>(r => setTimeout(() => r(false), 2500)),
+      ])
       if (played) return
+      audio.pause()
+      audio.removeAttribute('src')
     }
     const voices = await getVoices()
     if (voices.length) {
@@ -259,7 +275,11 @@ export const DictionaryView = ({ word: initial, context, lang, bookId, bookTitle
 }
 
 const countSenses = (entries: DictEntry[]) => entries.reduce((n, e) => n + (e.meanings?.reduce((m, x) => m + x.senses.length, 0) ?? 0), 0)
-const hasMore = (entries: DictEntry[]) => countSenses(entries) > 4 * entries.length || entries.some(e => e.etymology?.length)
+// whether the compact card (EntryView with compact) leaves anything out
+const hasMore = (entries: DictEntry[]) => entries.some(e =>
+  countSenses([e]) > 4 || !!e.etymology?.length || (e.translations?.senses.length ?? 0) > 3
+  || e.meanings?.some(m => m.synonyms?.length || m.antonyms?.length
+    || m.senses.some(s => s.examples.length > 1 || s.synonyms.length > 4 || s.antonyms.length > 4)))
 
 const Chips = ({ synonyms = [], antonyms = [], max, onLookup }: { synonyms?: string[]; antonyms?: string[]; max: number; onLookup: (w: string) => void }) => {
   if (!synonyms.length && !antonyms.length) return null
@@ -279,7 +299,10 @@ const Definition = ({ sense, onLookup }: { sense: Sense; onLookup: (w: string) =
   const target = sense.formOf
   if (!target) return <span className="dict-def">{label}{sense.def}</span>
   const link = (text: string) => <button className="inline-link" onClick={() => onLookup(target)}>{text}</button>
-  const i = sense.def.toLowerCase().lastIndexOf(target.toLowerCase())
+  // the last whole-word occurrence: "someone who drinks" must not link "drink" inside "drinks"
+  const escaped = target.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const matches = [...sense.def.matchAll(new RegExp(`(?<![\\p{L}\\p{N}])${escaped}(?![\\p{L}\\p{N}])`, 'giu'))]
+  const i = matches.length ? matches[matches.length - 1].index! : -1
   if (i < 0) return <span className="dict-def">{label}{sense.def} → {link(target)}</span>
   // keep closing punctuation on the link's line
   const after = sense.def.slice(i + target.length)

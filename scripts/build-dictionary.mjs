@@ -29,7 +29,7 @@ import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
 import { gunzipSync, gzipSync } from 'node:zlib'
 
-const VERSION = 5
+const VERSION = 6
 const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
 const out = path.join(root, 'public', 'dict')
 const require = createRequire(import.meta.url)
@@ -211,6 +211,9 @@ const shardKey = (word, len) => {
   return k.padEnd(len, '_')
 }
 
+/** Must match shardFile() in src/lib/dictionary/shards.ts: Windows can't create con.bin, prn.bin… */
+const shardFile = key => (/^(con|prn|aux|nul)$/.test(key) ? `${key}_` : key)
+
 const SPLIT_ABOVE = 400_000 // bytes of JSON per two-letter shard before it is split by the third letter
 let totalBytes = 0
 /** Writes a {word: entry} map as shards; large two-letter prefixes are split by a third letter. */
@@ -227,7 +230,7 @@ const writeShards = (dir, map) => {
   let files = 0
   const write = (key, m) => {
     const gz = gzipSync(Buffer.from(JSON.stringify(Object.fromEntries(m))), { level: 9 })
-    fs.writeFileSync(path.join(out, dir, `${key}.bin`), gz)
+    fs.writeFileSync(path.join(out, dir, `${shardFile(key)}.bin`), gz)
     bytes += gz.length
     files++
   }

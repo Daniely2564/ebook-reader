@@ -2,7 +2,7 @@
 // English→native-language dictionaries and translation lists from the same project.
 import { fetchGz, ShardSource } from './shards'
 import { POS_LABEL, type DictEntry, type Meaning, type Sense } from './types'
-import { lemmaCandidates, queryVariants } from './wordnet'
+import { inWordNet, irregularBases, lemmaCandidates, normalizeQuery, queryVariants, spellingVariants, stemOf } from './wordnet'
 
 type WkSense = { g: string; l?: string; x?: string[]; s?: string[]; a?: string[]; f?: string }
 type WkGroup = { p: string; s: WkSense[]; w?: string; i?: string[]; sy?: string[]; an?: string[] }
@@ -33,11 +33,11 @@ const relationOf = (s: WkSense) => relationName(s.g)
 
 const inflectionName = (word: string, pos: string) => {
   if (pos === 'n') return 'plural'
-  if (pos === 'a') return /est$/.test(word) ? 'superlative' : 'comparative'
+  if (pos === 'a' || pos === 'r') return /est$/.test(word) ? 'superlative' : 'comparative'
   if (/ing$/.test(word)) return 'present participle'
-  if (/ed$/.test(word)) return 'past tense'
-  if (/s$/.test(word)) return 'third-person singular'
-  return 'inflection'
+  if (/[^s]s$/.test(word)) return 'third-person singular'
+  // irregular verbs: went, felt, sung
+  return 'past tense'
 }
 
 const toSense = (s: WkSense): Sense => ({
@@ -50,17 +50,21 @@ const toSense = (s: WkSense): Sense => ({
   formOf: targetOf(s),
 })
 
-// exact-case groups first ("RAN" for RAN), then lowercase ones, then other spellings ("GO" under go)
-const rank = (g: WkGroup, original?: string) => (original && (g.w ?? '') === (original === original.toLowerCase() ? '' : original) ? 0 : g.w ? 2 : 1)
+// Case only says something when it isn't the usual sentence or title case: "RAN", "iPod".
+const meaningfulCase = (original: string) =>
+  original !== 'I' && (original === original.toLowerCase() || /^(?:\p{Lu}[^\p{Lu}\s]*\s?)+$/u.test(original)) ? '' : original
 
-const toEntry = (word: string, raw: WkEntry, groups = raw.m ?? [], original?: string): DictEntry => ({
+// exact-case groups first ("RAN" for RAN), then lowercase ones, then other spellings ("GO" under go)
+const rank = (g: WkGroup, casing: string) => ((g.w ?? '') === casing ? 0 : g.w ? 2 : 1)
+
+const toEntry = (word: string, raw: WkEntry, groups = raw.m ?? [], casing = ''): DictEntry => ({
   word,
   ipa: raw.i?.[0],
   ipaAlt: raw.i?.[1],
   audio: raw.a ? COMMONS + raw.a : undefined,
   etymology: raw.e,
   meanings: groups
-    .map((g, i) => [g, rank(g, original), i] as const)
+    .map((g, i) => [g, rank(g, casing), i] as const)
     .sort((a, b) => a[1] - b[1] || a[2] - b[2])
     .map(([g]): Meaning => ({
       pos: POS_LABEL[g.p] ?? g.p,
@@ -72,36 +76,59 @@ const toEntry = (word: string, raw: WkEntry, groups = raw.m ?? [], original?: st
     })),
 })
 
-const MINOR = /obsolete|archaic|rare|nonstandard|dialect|misspelling|eye dialect/
+// senses not worth leading a reader to another headword
+const MINOR = /obsolete|archaic|dated|rare|nonstandard|dialect|misspelling|eye dialect/i
+// archaic inflections still lead somewhere useful ("hath" → have); obsolete spellings don't
+const MINOR_INFLECTION = /obsolete|misspelling|nonstandard|eye dialect/i
+const isMinor = (s: WkSense) => (INFLECTED_FORM.test(s.g) ? MINOR_INFLECTION : MINOR).test(`${s.l ?? ''} ${s.g}`)
+const splitTargets = (t: string) => t.toLowerCase().split(/\s*,\s*|\s+(?:and|or)\s+/).filter(Boolean)
 
 export const lookupWiktionaryOffline = async (raw: string): Promise<DictEntry[]> => {
   const variants = queryVariants(raw)
-  const original = raw.trim()
+  const stem = stemOf(variants)
+  const casing = meaningfulCase(normalizeQuery(raw))
+  const irregular = stem ? await irregularBases(stem) : []
   const results: DictEntry[] = []
   const seen = new Set<string>()
 
-  // the entry a form points at, following one more hop for e.g. "colours" → "colour" → "color"
-  const resolve = async (target: string, from: string, relation: string | undefined, out: DictEntry[], hops = 1): Promise<boolean> => {
+  // The entry a form points at, following one more hop for e.g. "colours" → "colour" → "color".
+  // Every headword passed through is added to `via`.
+  const resolve = async (target: string, from: string, relation: string | undefined, out: DictEntry[], via = new Set<string>(), hops = 1): Promise<boolean> => {
     const key = target.toLowerCase()
+    via.add(key)
     if (seen.has(key)) return true
     const e = await wiktionary.get(key)
     if (!e) {
       // "comparative degree of good and well"
-      const parts = key.split(/\s*,\s*|\s+(?:and|or)\s+/).filter(Boolean)
+      const parts = splitTargets(key)
       if (parts.length < 2) return false
       let found = false
-      for (const part of parts.slice(0, 2)) found = await resolve(part, from, relation, out, hops) || found
+      for (const part of parts.slice(0, 2)) found = await resolve(part, from, relation, out, via, hops) || found
       return found
     }
-    if (e.r) return hops > 0 && resolve(e.r[0][0], from, relation ?? relationName(e.r[0][1]), out, hops - 1)
+    if (e.r) return hops > 0 && resolve(e.r[0][0], from, relation ?? relationName(e.r[0][1]), out, via, hops - 1)
     const groups = e.m ?? []
     if (hops > 0 && groups.length && groups.every(g => g.s.every(isFormSense))) {
       const s = groups[0].s[0]
-      return resolve(targetOf(s)!, from, relation ?? relationOf(s), out, hops - 1)
+      return resolve(targetOf(s)!, from, relation ?? relationOf(s), out, via, hops - 1)
     }
     seen.add(key)
     out.push({ ...toEntry(key, e), formOf: from, relation })
     return true
+  }
+
+  // "goes" is listed as the plural of the noun "go", but go is mostly a verb
+  const relationFor = async (word: string, base: string, pos: string) => {
+    if (pos === 'n' && /s$/.test(word) && (await wiktionary.get(base))?.m?.find(g => !g.w)?.p === 'verb') pos = 'v'
+    return inflectionName(word, pos)
+  }
+
+  // irregular base forms ("children" → child, "felt" → feel)
+  const resolveIrregular = async (from: string, out: DictEntry[], via: Set<string>) => {
+    for (const { base, pos } of irregular) {
+      if (out.length >= 2) break
+      await resolve(base, from, await relationFor(from, base, pos), out, via)
+    }
   }
 
   let primary = true
@@ -112,7 +139,10 @@ export const lookupWiktionaryOffline = async (raw: string): Promise<DictEntry[]>
     const lemmaHunt = primary
     primary = false
     if (e.r) {
-      // form-only headword: show what it points at
+      // form-only headword: show the standard lemma, or else what the redirect points at
+      const before = results.length
+      if (lemmaHunt) await resolveIrregular(v, results, new Set())
+      if (results.length > before) continue
       const [first, ...others] = e.r
       await resolve(first[0], v, relationName(first[1]), results)
       for (const [t, rel] of others) if (INFLECTED_FORM.test(rel)) await resolve(t, v, relationName(rel), results)
@@ -121,39 +151,64 @@ export const lookupWiktionaryOffline = async (raw: string): Promise<DictEntry[]>
     seen.add(v)
     const groups = e.m ?? []
     const lemmas: DictEntry[] = []
-    // "ran" → run, "leaves" → leaf, leave: show the lemmas, and keep only the word's own meanings
-    const leadsWithForm = !!groups[0]?.s[0] && isFormSense(groups[0].s[0])
+    const via = new Set<string>()
+    // "ran" → run, "felt" → feel, "leaves" → leaf: show the lemmas, and keep only the word's own meanings
+    const lead = groups[0]?.s[0]
+    const leadsWithForm = !!lead && isFormSense(lead) && !isMinor(lead)
     if (lemmaHunt) {
-      const follow: WkSense[] = []
-      if (leadsWithForm) follow.push(groups[0].s[0])
-      for (const g of groups.slice(leadsWithForm ? 1 : 0)) {
-        if (!g.s.every(isFormSense)) continue
-        const s = g.s.find(x => !MINOR.test(x.l ?? '') && !follow.some(f => targetOf(f) === targetOf(x)))
-        if (s && !follow.includes(s)) follow.push(s)
+      const follow: WkSense[] = leadsWithForm ? [lead] : []
+      for (const g of groups) {
+        // "Said" (Sayyid) and "WAs" don't explain "said" and "was"
+        if (g.w && g.w !== casing) continue
+        const s = g.s.find(x => isFormSense(x) && INFLECTED_FORM.test(x.g) && !isMinor(x))
+        if (s && !follow.some(f => targetOf(f) === targetOf(s))) follow.push(s)
       }
       for (const s of follow) {
         if (lemmas.length >= 2) break
-        await resolve(targetOf(s)!, v, relationOf(s), lemmas)
+        await resolve(targetOf(s)!, v, relationOf(s), lemmas, via)
       }
+      await resolveIrregular(v, lemmas, via)
     }
-    // drop senses that just point at a lemma shown above
-    const shown = (s: WkSense) => isFormSense(s) && lemmas.some(l => targetOf(s)!.toLowerCase().split(/\s*,\s*|\s+(?:and|or)\s+/).includes(l.word))
+    // drop senses that just point at a lemma shown here
+    const shown = (s: WkSense) => isFormSense(s) && splitTargets(targetOf(s)!).some(t => via.has(t))
     const own = groups
       .map(g => (lemmas.length ? { ...g, s: g.s.filter(s => !shown(s)) } : g))
       .filter(g => g.s.length)
-    const entry = own.length ? [toEntry(v, e, own, original)] : []
-    results.push(...(leadsWithForm ? [...lemmas, ...entry] : [...entry, ...lemmas]))
+    const entry = own.length ? [toEntry(v, e, own, casing)] : []
+    // the lemma leads when the word is mainly a form of it ("ran", "felt"), not for "number" → numb
+    const lemmaFirst = leadsWithForm || lemmas.some(l => irregular.some(c => c.base === l.word))
+    results.push(...(lemmaFirst ? [...lemmas, ...entry] : [...entry, ...lemmas]))
   }
 
-  // nothing under the word itself: try its base forms ("geese" → goose, "cats" → cat)
-  if (!results.length && variants[0]) {
-    for (const { base, pos } of await lemmaCandidates(variants[0])) {
-      if (seen.has(base)) continue
-      const e = await wiktionary.get(base)
-      if (!e) continue
-      if (e.r || e.m?.some(g => g.p === POS_OF[pos])) {
-        if (await resolve(base, variants[0], inflectionName(variants[0], pos), results)) break
+  // other spellings ("well known" → well-known, "realise" → realize), then base forms
+  if (!results.length && stem) {
+    for (const v of spellingVariants(stem)) {
+      const e = await wiktionary.get(v)
+      if (e?.m) {
+        results.push(toEntry(v, e, e.m, casing))
+        seen.add(v)
+        break
       }
+      if (e?.r && await resolve(e.r[0][0], v, relationName(e.r[0][1]), results)) break
+    }
+  }
+  if (!results.length && stem) {
+    // "does" → do (not doe), "tries" → try (not trie): irregular forms, then real lemmas
+    // (in WordNet), then the longest suffix rule
+    const scored = new Map<string, { pos: string; score: number }>()
+    for (const c of await lemmaCandidates(stem)) {
+      if (c.base === stem || seen.has(c.base)) continue
+      const e = await wiktionary.get(c.base)
+      if (!e || !(e.r || e.m?.some(g => g.p === POS_OF[c.pos] && !g.s.every(isFormSense)))) continue
+      const score = (c.irregular ? 100 : 0) + (await inWordNet(c.base, c.pos) ? 10 : 0) + c.suffix
+      const prev = scored.get(c.base)
+      if (!prev || score > prev.score) scored.set(c.base, { pos: c.pos, score })
+    }
+    const ranked = [...scored].sort((a, b) => b[1].score - a[1].score)
+    for (const [base, { pos, score }] of ranked) {
+      // a second lemma only when it is irregular too ("leaves" → leaf, leave)
+      if (results.length && (score < 100 || results.length >= 2)) break
+      await resolve(base, stem, await relationFor(stem, base, pos), results)
     }
   }
   return results

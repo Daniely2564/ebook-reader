@@ -1,6 +1,6 @@
 // Offline English WordNet (3.1, with CMU pronunciations) plus the lookup helpers
 // shared by all built-in dictionaries: query cleanup, lemmatization, word list.
-import { fetchGz, ShardSource } from './shards'
+import { fetchGz, retryable, ShardSource } from './shards'
 import { POS_LABEL, type DictEntry, type Meaning } from './types'
 import { publicUrl } from '../platform'
 
@@ -22,19 +22,25 @@ export interface DictMeta {
 const wordnet = new ShardSource<RawEntry>('dict/wn')
 
 let excPromise: Promise<Record<string, Record<string, string[]>>> | null = null
-const loadExceptions = () => excPromise ??= fetch(publicUrl('dict/exc.json'))
-  .then(r => r.json())
-  .catch(() => ({}))
+const loadExceptions = () => excPromise ??= retryable(
+  () => fetch(publicUrl('dict/exc.json')).then(r => r.json()),
+  {},
+  () => (excPromise = null),
+)
 
 let metaPromise: Promise<DictMeta | null> | null = null
-export const getDictMeta = () => metaPromise ??= fetch(publicUrl('dict/meta.json'))
-  .then(r => (r.ok ? r.json() : null))
-  .catch(() => null)
+export const getDictMeta = () => metaPromise ??= retryable(
+  () => fetch(publicUrl('dict/meta.json')).then(r => (r.ok ? r.json() : null)),
+  null,
+  () => (metaPromise = null),
+)
 
 let wordsPromise: Promise<string[]> | null = null
-export const loadWordList = () => wordsPromise ??= fetchGz('dict/words.bin')
-  .then(t => t.split('\n'))
-  .catch(() => [])
+export const loadWordList = () => wordsPromise ??= retryable(
+  () => fetchGz('dict/words.bin').then(t => t.split('\n')),
+  [],
+  () => (wordsPromise = null),
+)
 
 const toEntry = (word: string, raw: RawEntry, formOf?: string): DictEntry => ({
   word,
@@ -74,37 +80,60 @@ export const normalizeQuery = (raw: string) => {
   return ELISION.test(elided) ? elided : trimmed
 }
 
-/** Base-form candidates for an inflected word, most likely first. */
-export const lemmaCandidates = async (word: string) => {
+const own = <T>(o: Record<string, T> | undefined, key: string) => (o && Object.hasOwn(o, key) ? o[key] : undefined)
+
+/** Irregular base forms from the WordNet exception lists ("went" → go, "geese" → goose). */
+export const irregularBases = async (word: string) => {
   const exc = await loadExceptions()
   const out: { base: string; pos: string }[] = []
+  for (const pos of ['n', 'v', 'a', 'r'])
+    for (const base of own<string[]>(exc[pos], word) ?? []) if (base !== word) out.push({ base, pos })
+  return out
+}
+
+/** Base-form candidates for an inflected word: irregular forms first, then suffix rules. */
+export const lemmaCandidates = async (word: string) => {
+  const out: { base: string; pos: string; irregular?: boolean; suffix: number }[] =
+    (await irregularBases(word)).map(c => ({ ...c, irregular: true, suffix: word.length }))
   for (const pos of ['n', 'v', 'a', 'r']) {
-    for (const base of exc[pos]?.[word] ?? []) out.push({ base, pos })
     for (const [suffix, repl] of RULES[pos]) {
       if (word.length > suffix.length + 1 && word.endsWith(suffix))
-        out.push({ base: word.slice(0, -suffix.length) + repl, pos })
+        out.push({ base: word.slice(0, -suffix.length) + repl, pos, suffix: suffix.length })
     }
   }
   return out
 }
 
-/** Spelling variants of a query to try in order: case, possessives, hyphens, British spellings. */
+/** Forms of a query to look up, best first: as written, then without a possessive or elision. */
 export const queryVariants = (raw: string) => {
   const query = normalizeQuery(raw)
   if (!query || query.length > 80) return []
-  // possessives: "Darcy's" → "darcy"
-  const word = query.toLowerCase().replace(/'s$|s'$/, m => (m === "s'" ? 's' : ''))
-  const variants = [word]
-  if (word.startsWith("'")) variants.push(word.slice(1))
+  const lower = query.toLowerCase()
+  // "let's" and "it's" are headwords; "Darcy's" is a possessive of "darcy"
+  const variants = [lower, lower.replace(/'s$|s'$/, m => (m === "s'" ? 's' : ''))]
   // abbreviations keep their final period: "e.g.", "etc.", "Mr."
-  if (/[a-z]\.[a-z]/.test(word)) variants.unshift(`${word}.`)
-  else if (/\.\s*$/.test(raw)) variants.push(`${word}.`)
-  if (word.includes('-')) variants.push(word.replace(/-/g, ' '), word.replace(/-/g, ''))
-  if (word.includes(' ')) variants.push(word.replace(/ /g, '-'))
-  if (/is(e|ed|es|ing|ation)$/.test(word)) variants.push(word.replace(/is(e|ed|es|ing|ation)$/, 'iz$1'))
-  if (/our$/.test(word)) variants.push(word.replace(/our$/, 'or'))
+  if (/[a-z]\.[a-z]/.test(lower)) variants.unshift(`${lower}.`)
+  else if (/\.\s*$/.test(raw)) variants.push(`${lower}.`)
   return [...new Set(variants.filter(Boolean))]
 }
+
+/** The word inflection rules apply to: no possessive, no elision apostrophe. */
+export const stemOf = (variants: string[]) => variants.find(v => !/'/.test(v) && !v.endsWith('.')) ?? variants[0]
+
+/** Other spellings, tried only when the word itself isn't found: hyphens, British -our/-ise. */
+export const spellingVariants = (word: string) => {
+  const out: string[] = []
+  if (word.includes('-')) out.push(word.replace(/-/g, ' '), word.replace(/-/g, ''))
+  if (word.includes(' ')) out.push(word.replace(/ /g, '-'))
+  if (/is(e|ed|es|ing|ation)$/.test(word)) out.push(word.replace(/is(e|ed|es|ing|ation)$/, 'iz$1'))
+  // honour, colour, behaviour (not four, pour, tour)
+  if (/[a-z]{3}our$/.test(word)) out.push(word.replace(/our$/, 'or'))
+  return out.filter(v => v !== word)
+}
+
+/** Whether WordNet lists the word under a part of speech (n, v, a, r). */
+export const inWordNet = async (word: string, pos: string) =>
+  !!(await wordnet.get(word))?.m.some(([p]) => p === pos || (pos === 'a' && p === 's'))
 
 export const lookupWordNet = async (raw: string): Promise<DictEntry[]> => {
   const variants = queryVariants(raw)
@@ -119,12 +148,19 @@ export const lookupWordNet = async (raw: string): Promise<DictEntry[]> => {
     const e = await wordnet.get(v)
     if (e) add(v, e)
   }
+  const stem = stemOf(variants)
+  if (!results.length && stem) {
+    for (const v of spellingVariants(stem)) {
+      const e = await wordnet.get(v)
+      if (e) add(v, e)
+    }
+  }
   // inflections: "running" → "run", "geese" → "goose"
-  for (const v of variants.slice(0, 1)) {
-    for (const { base, pos } of await lemmaCandidates(v)) {
-      if (base === v || seen.has(base)) continue
+  if (stem) {
+    for (const { base, pos } of await lemmaCandidates(stem)) {
+      if (base === stem || seen.has(base)) continue
       const e = await wordnet.get(base)
-      if (e && e.m.some(([p]) => p === pos || (pos === 'a' && p === 's'))) add(base, e, v)
+      if (e && e.m.some(([p]) => p === pos || (pos === 'a' && p === 's'))) add(base, e, stem)
     }
   }
   return results

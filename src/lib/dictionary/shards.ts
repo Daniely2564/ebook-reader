@@ -13,11 +13,24 @@ export const shardKey = (word: string, len = 2) => {
   return k.padEnd(len, '_')
 }
 
+/** Must match shardFile() in scripts/build-dictionary.mjs: Windows can't create con.bin, prn.bin… */
+export const shardFile = (key: string) => (/^(con|prn|aux|nul)$/.test(key) ? `${key}_` : key)
+
+export class NotFound extends Error {}
+
 export const fetchGz = async (path: string) => {
   const res = await fetch(publicUrl(path))
+  if (res.status === 404) throw new NotFound(path)
   if (!res.ok) throw new Error(`${res.status} ${path}`)
   return strFromU8(gunzipSync(new Uint8Array(await res.arrayBuffer())))
 }
+
+/** Caches a load, except when it fails for a reason other than "not found", so it is retried. */
+export const retryable = <T>(load: () => Promise<T>, fallback: T, forget: () => void): Promise<T> =>
+  load().catch(e => {
+    if (!(e instanceof NotFound)) forget()
+    return fallback
+  })
 
 /** A dictionary split into shards by the first two (or three) letters, loaded on demand. */
 export class ShardSource<T> {
@@ -32,10 +45,16 @@ export class ShardSource<T> {
   }
 
   #index() {
-    return this.#split ??= fetch(publicUrl(`${this.#dir}/index.json`))
-      .then(r => (r.ok ? r.json() : { split: [] }))
-      .then((j: { split?: string[] }) => new Set(j.split ?? []))
-      .catch(() => new Set<string>())
+    return this.#split ??= retryable(
+      async () => {
+        const r = await fetch(publicUrl(`${this.#dir}/index.json`))
+        if (r.status === 404) return new Set<string>()
+        if (!r.ok) throw new Error(`${r.status}`)
+        return new Set<string>((await r.json() as { split?: string[] }).split ?? [])
+      },
+      new Set<string>(),
+      () => (this.#split = null),
+    )
   }
 
   #shard(key: string) {
@@ -46,9 +65,11 @@ export class ShardSource<T> {
       this.#cache.set(key, p)
       return p
     }
-    p = fetchGz(`${this.#dir}/${key}.bin`)
-      .then(text => JSON.parse(text) as Record<string, T>)
-      .catch(() => ({}) as Record<string, T>)
+    p = retryable(
+      () => fetchGz(`${this.#dir}/${shardFile(key)}.bin`).then(text => JSON.parse(text) as Record<string, T>),
+      {} as Record<string, T>,
+      () => this.#cache.delete(key),
+    )
     this.#cache.set(key, p)
     if (this.#cache.size > this.#max) this.#cache.delete(this.#cache.keys().next().value!)
     return p

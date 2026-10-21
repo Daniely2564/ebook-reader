@@ -38,6 +38,8 @@ export interface SelectionInfo {
   fraction?: number
   /** true when triggered by a double-click / long press on one word */
   isWord: boolean
+  /** what to look up when it differs from text ("'tis" for a double-click on "’Tis") */
+  lookup?: string
 }
 
 export interface SearchHit {

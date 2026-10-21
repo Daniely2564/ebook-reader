@@ -176,7 +176,7 @@ const Dictionaries = () => {
       <div className="typo-row">
         <span>My language</span>
         <select className="select" value={s.translateTo} onChange={e => s.set({ translateTo: e.target.value })}>
-          {LANGS.map(l => <option key={l} value={l}>{langName.of(l) ?? l}</option>)}
+          {(LANGS.includes(s.translateTo) ? LANGS : [s.translateTo, ...LANGS]).map(l => <option key={l} value={l}>{langName.of(l) ?? l}</option>)}
         </select>
       </div>
     </div>

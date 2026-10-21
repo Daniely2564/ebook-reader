@@ -249,6 +249,10 @@ export class EpubEngine implements ReaderEngine {
       if (e.pointerType !== 'touch') this.#mouseDown = true
       activity()
     })
+    // dragging a selection (drag and drop) ends without a mouseup
+    const released = () => (this.#mouseDown = false)
+    doc.addEventListener('pointercancel', released)
+    doc.addEventListener('dragend', released)
     // MouseEvent.detail carries the click count (PointerEvent.detail is always 0)
     doc.addEventListener('mouseup', e => {
       this.#mouseDown = false
@@ -317,12 +321,14 @@ export class EpubEngine implements ReaderEngine {
     const sel = doc.getSelection()
     if (!sel || sel.isCollapsed || !sel.rangeCount) return
     const range = sel.getRangeAt(0)
-    let text = sel.toString().replace(/\s+/g, ' ').trim()
+    const text = sel.toString().replace(/\s+/g, ' ').trim()
     if (!text) return
-    // a double-click on "’Tis" selects "Tis": look up the elided word
+    // a double-click on "’Tis" selects "Tis": look up the elided word (but not after
+    // an opening quote, as in ‘Cause of death?’)
+    let lookup: string | undefined
     if (fromWordGesture && range.startContainer.nodeType === Node.TEXT_NODE) {
       const before = range.startContainer.nodeValue!.slice(Math.max(0, range.startOffset - 2), range.startOffset)
-      if (/(?:^|[^\p{L}])[‘’']$/u.test(before) && isElision(`'${text}`)) text = `'${text}`
+      if (/(?:^|[^\p{L}])[’'ʼ]$/u.test(before) && isElision(`'${text}`)) lookup = `'${text}`
     }
     const index = this.#docIndex.get(doc)
     let locator: string | null = null
@@ -341,6 +347,7 @@ export class EpubEngine implements ReaderEngine {
       chapter: this.#location?.tocItem?.label?.trim(),
       fraction: this.#location?.fraction,
       isWord: isSingleWord && fromWordGesture,
+      lookup,
     })
   }
 
