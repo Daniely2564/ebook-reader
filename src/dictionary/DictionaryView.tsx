@@ -1,6 +1,6 @@
 import { ArrowLeft, Check, Copy, ExternalLink, Globe, Languages, Star, Volume2, WifiOff } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { addLookupHistory, didYouMean, isOnlineSource, languageName, lookupOffline, lookupOnline, normalizeQuery, ONLINE_SOURCES, type DictEntry, type DictResult, type OnlineSourceId, type Sense } from '../lib/dictionary'
+import { addLookupHistory, didYouMean, isOnlineSource, languageName, listSources, lookupOffline, lookupOnline, normalizeQuery, ONLINE_SOURCES, type DictEntry, type DictResult, type DictSource, type Meaning, type OnlineSourceId, type Sense } from '../lib/dictionary'
 import { lookupPronunciation } from '../lib/dictionary/online'
 import { stripHtml } from '../lib/dictionary/sanitize'
 import { deleteVocab, getVocab, putVocab, uid } from '../lib/db'
@@ -36,6 +36,22 @@ interface Props {
   compact?: boolean
 }
 
+/** An online lookup: its entry, null when the source has none, or 'error' when it couldn't be reached. */
+type OnlineState = DictResult | null | 'loading' | 'error'
+
+// one tap to the big dictionaries' own pages
+const WEB_DICTIONARIES: { name: string; url: (w: string) => string }[] = [
+  { name: 'Merriam-Webster', url: w => `https://www.merriam-webster.com/dictionary/${encodeURIComponent(w)}` },
+  { name: 'Cambridge', url: w => `https://dictionary.cambridge.org/dictionary/english/${encodeURIComponent(w.replace(/ /g, '-'))}` },
+  { name: 'Oxford Learner’s', url: w => `https://www.oxfordlearnersdictionaries.com/search/english/?q=${encodeURIComponent(w)}` },
+  { name: 'Collins', url: w => `https://www.collinsdictionary.com/dictionary/english/${encodeURIComponent(w.replace(/ /g, '-'))}` },
+  { name: 'Longman', url: w => `https://www.ldoceonline.com/search/english/direct/?q=${encodeURIComponent(w)}` },
+  { name: 'Dictionary.com', url: w => `https://www.dictionary.com/browse/${encodeURIComponent(w)}` },
+  { name: 'Vocabulary.com', url: w => `https://www.vocabulary.com/dictionary/${encodeURIComponent(w)}` },
+  { name: 'Etymonline', url: w => `https://www.etymonline.com/search?q=${encodeURIComponent(w)}` },
+  { name: 'Google', url: w => `https://www.google.com/search?q=${encodeURIComponent(`define ${w}`)}` },
+]
+
 export const DictionaryView = ({ word: initial, context, lang, bookId, bookTitle, compact }: Props) => {
   const [stack, setStack] = useState([normalizeQuery(initial)])
   useEffect(() => setStack([normalizeQuery(initial)]), [initial])
@@ -45,21 +61,21 @@ export const DictionaryView = ({ word: initial, context, lang, bookId, bookTitle
   const ttsVoice = useSettings(s => s.ttsVoice)
   const dictDisabled = useSettings(s => s.dictDisabled)
   const isEnglish = !lang || lang.toLowerCase().startsWith('en')
-  // the last tab picked is remembered per book language
+  // the dictionary picked last is remembered per book language
   const langKey = isEnglish ? 'en' : lang!.slice(0, 2).toLowerCase()
   const preferred = useSettings(s => s.dictTabs[langKey])
   const setSettings = useSettings(s => s.set)
 
+  const [sources, setSources] = useState<DictSource[]>([])
   const [offline, setOffline] = useState<DictResult[] | null>(null)
-  const [online, setOnline] = useState<Record<string, DictResult | null | 'loading'>>({})
-  const [tab, setTab] = useState('')
-  // the first offline tab, shown if the remembered online tab has nothing
-  const fallbackTab = useRef('')
-  const autoPicked = useRef(false)
+  const [online, setOnline] = useState<Record<string, OnlineState>>({})
+  const [retry, setRetry] = useState(0)
   const [suggestions, setSuggestions] = useState<string[]>([])
   const [savedId, setSavedId] = useState<string | null>(null)
   const [expanded, setExpanded] = useState(false)
+  const [webOpen, setWebOpen] = useState(false)
   const bodyRef = useRef<HTMLDivElement>(null)
+  const tabsRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     let alive = true
@@ -67,19 +83,14 @@ export const DictionaryView = ({ word: initial, context, lang, bookId, bookTitle
     setOnline({})
     setSuggestions([])
     setExpanded(false)
-    lookupOffline(word).catch(e => {
+    const offlineLookup = lookupOffline(word).catch(e => {
       console.warn('Lookup failed', e)
       return [] as DictResult[]
-    }).then(res => {
+    })
+    Promise.all([listSources().catch(() => [] as DictSource[]), offlineLookup]).then(([list, res]) => {
       if (!alive) return
+      setSources(list)
       setOffline(res)
-      // prefer a user dictionary matching a non-English book
-      const first = (!isEnglish ? res.find(r => r.source.kind === 'user') : undefined) ?? res[0]
-      fallbackTab.current = first?.source.id ?? ''
-      const remembered = preferred && (res.some(r => r.source.id === preferred) || (onlineEnabled && isOnlineSource(preferred)))
-      autoPicked.current = !!remembered
-      if (remembered) setTab(preferred)
-      else setTab(first?.source.id ?? (onlineEnabled ? 'wiktionary-web' : ''))
       if (res.length) addLookupHistory(word)
       else if (isEnglish) didYouMean(word).then(s => alive && setSuggestions(s.filter(x => x !== word.toLowerCase())))
     })
@@ -87,25 +98,33 @@ export const DictionaryView = ({ word: initial, context, lang, bookId, bookTitle
     return () => {
       alive = false
     }
-  }, [word, onlineEnabled, isEnglish, dictDisabled, translateTo]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [word, onlineEnabled, isEnglish, dictDisabled, translateTo])
+
+  // The dictionary picked last, as long as it is still available; otherwise the first one
+  // with an entry (an imported dictionary first for books in other languages). It never
+  // changes on its own: when the chosen dictionary has nothing, that is said below it.
+  const tab = useMemo(() => {
+    if (!offline) return ''
+    if (preferred && sources.some(s => s.id === preferred)) return preferred
+    const first = (!isEnglish ? offline.find(r => r.source.kind === 'user') : undefined) ?? offline[0]
+    return first?.source.id ?? (onlineEnabled ? ONLINE_SOURCES[0].id : sources[0]?.id ?? '')
+  }, [offline, sources, preferred, isEnglish, onlineEnabled])
 
   useEffect(() => {
     if (!isOnlineSource(tab) || offline === null) return
-    if (online[tab] !== undefined) return
+    if (online[tab] !== undefined && online[tab] !== 'error') return
     const ctrl = new AbortController()
     const source: OnlineSourceId = tab
     setOnline(o => ({ ...o, [source]: 'loading' }))
-    const done = (r: DictResult | null) => {
+    const done = (r: OnlineState) => {
       if (ctrl.signal.aborted) return
       setOnline(o => ({ ...o, [source]: r }))
-      if (r) addLookupHistory(word)
-      // offline, or nothing there: show what we have offline, keeping the remembered tab
-      else if (autoPicked.current && fallbackTab.current) {
-        autoPicked.current = false
-        setTab(fallbackTab.current)
-      }
+      if (r && r !== 'error' && r !== 'loading') addLookupHistory(word)
     }
-    lookupOnline(word, source, lang?.slice(0, 2), ctrl.signal).then(done, () => done(null))
+    lookupOnline(word, source, lang?.slice(0, 2), ctrl.signal).then(done, e => {
+      if (!ctrl.signal.aborted) console.warn(`${source} lookup failed`, e)
+      done('error')
+    })
     return () => {
       ctrl.abort()
       // an interrupted lookup is retried when its tab is opened again
@@ -115,28 +134,35 @@ export const DictionaryView = ({ word: initial, context, lang, bookId, bookTitle
         return rest
       })
     }
-  }, [tab, word, lang, offline]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [tab, word, lang, offline, retry]) // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     bodyRef.current?.scrollTo({ top: 0 })
   }, [tab, word])
 
+  // keep the chosen dictionary's tab in view when the tabs scroll
+  useEffect(() => {
+    const row = tabsRef.current
+    const on = row?.querySelector<HTMLElement>('[aria-selected="true"]')
+    if (row && on && (on.offsetLeft < row.scrollLeft || on.offsetLeft + on.offsetWidth > row.scrollLeft + row.clientWidth))
+      row.scrollTo({ left: on.offsetLeft - 18 })
+  }, [tab, sources])
+
   const push = (w: string) => setStack(s => [...s, normalizeQuery(w)])
   const pickTab = (id: string) => {
-    autoPicked.current = false
-    setTab(id)
+    if (id === tab && online[id] === 'error') setRetry(n => n + 1)
     if (id !== preferred) setSettings({ dictTabs: { ...useSettings.getState().dictTabs, [langKey]: id } })
   }
 
-  const tabs = useMemo(() => {
-    const t = (offline ?? []).map(r => ({ id: r.source.id, name: r.source.name, offline: true }))
-    if (onlineEnabled) for (const s of ONLINE_SOURCES) t.push({ id: s.id, name: s.name, offline: false })
-    return t
-  }, [offline, onlineEnabled])
+  const state: OnlineState | undefined = isOnlineSource(tab) ? online[tab] : offline?.find(r => r.source.id === tab) ?? null
+  const current = state && typeof state === 'object' ? state : null
+  const loading = offline === null || state === 'loading' || (isOnlineSource(tab) && state === undefined)
+  // the chosen dictionary has nothing: show the first offline one that does, under it
+  const fallback = !loading && !current ? offline?.find(r => r.source.id !== tab) : undefined
+  const shown = current ?? fallback
+  const tabName = sources.find(s => s.id === tab)?.name ?? ONLINE_SOURCES.find(s => s.id === tab)?.name ?? ''
+  const isEmpty = (id: string) => (isOnlineSource(id) ? online[id] === null || online[id] === 'error' : !!offline && !offline.some(r => r.source.id === id))
 
-  const current: DictResult | null | 'loading' | undefined = isOnlineSource(tab)
-    ? online[tab]
-    : offline?.find(r => r.source.id === tab)
   const head = offline?.[0]?.entries[0]
   const headword = head && !head.formOf ? head.word : word
   // pronunciation of the word itself, not of the lemma it was found under; the built-in
@@ -186,7 +212,7 @@ export const DictionaryView = ({ word: initial, context, lang, bookId, bookTitle
       toast(`Removed “${headword}” from vocabulary`)
       return
     }
-    const definition = firstDefinition(offline?.[0]) || firstDefinition(typeof current === 'object' && current ? current : undefined)
+    const definition = firstDefinition(shown?.source.kind === 'online' ? undefined : shown) || firstDefinition(offline?.[0]) || firstDefinition(current ?? undefined)
     const id = uid()
     await putVocab({ id, word: headword, definition, ipa, context, bookId, bookTitle, createdAt: Date.now() })
     setSavedId(id)
@@ -203,7 +229,6 @@ export const DictionaryView = ({ word: initial, context, lang, bookId, bookTitle
   }
 
   const translateText = context && context.length < 400 && !compact ? context : word
-  const loading = offline === null || current === 'loading'
 
   return (
     <div className={`dict ${compact ? 'compact' : ''}`}>
@@ -223,11 +248,12 @@ export const DictionaryView = ({ word: initial, context, lang, bookId, bookTitle
         </div>
       </div>
 
-      {tabs.length > 1 && (
-        <div className="dict-tabs" role="tablist">
-          {tabs.map(t => (
-            <button key={t.id} role="tab" aria-selected={t.id === tab} className={t.id === tab ? 'on' : ''} onClick={() => pickTab(t.id)}>
-              {t.offline ? null : <Globe size={12} />}{t.name}
+      {sources.length > 1 && (
+        <div className="dict-tabs" role="tablist" ref={tabsRef}>
+          {sources.map(s => (
+            <button key={s.id} role="tab" aria-selected={s.id === tab} className={`${s.id === tab ? 'on' : ''} ${isEmpty(s.id) ? 'empty' : ''}`}
+              title={isEmpty(s.id) ? `No entry in ${s.name}` : undefined} onClick={() => pickTab(s.id)}>
+              {s.kind === 'online' && <Globe size={12} />}{s.name}
             </button>
           ))}
         </div>
@@ -235,38 +261,57 @@ export const DictionaryView = ({ word: initial, context, lang, bookId, bookTitle
 
       <div className="dict-body" ref={bodyRef}>
         {loading && <div className="dict-loading"><Spinner size={18} /></div>}
-        {!loading && current && typeof current === 'object' && current.entries.map((e, i) => (
-          <EntryView key={`${tab}-${i}`} entry={e} compact={compact && !expanded} onLookup={push} onHtmlClick={onHtmlClick} showWord={i > 0 || !!e.formOf || current.source.kind !== 'offline'} />
-        ))}
-        {!loading && compact && !expanded && current && typeof current === 'object' && current.source.kind !== 'online' && hasMore(current.entries) && (
-          <button className="link-btn" onClick={() => setExpanded(true)}>
-            {countSenses(current.entries) > 4 ? `Show all ${countSenses(current.entries)} definitions` : 'Show more'}
-          </button>
-        )}
         {!loading && !current && (
           <div className="dict-none">
-            <p>No definition found for <b>{word}</b>{isOnlineSource(tab) ? ` on ${ONLINE_SOURCES.find(s => s.id === tab)!.name}` : ' offline'}.</p>
-            {suggestions.length > 0 && (
+            {state === 'error'
+              ? (
+                <p className={fallback ? 'dict-miss' : undefined}>
+                  <WifiOff size={13} /> Couldn’t reach {tabName}.{' '}
+                  <button className="link-btn" onClick={() => setRetry(n => n + 1)}>Try again</button>
+                </p>
+              )
+              : (
+                <p className={fallback ? 'dict-miss' : undefined}>
+                  {tab ? <>No entry for <b>{word}</b> in {tabName}.</> : <>No definition found for <b>{word}</b>.</>}
+                </p>
+              )}
+            {!fallback && suggestions.length > 0 && (
               <div className="dict-chips">
                 <span className="muted">Did you mean</span>
                 {suggestions.map(s => <button key={s} className="chip-btn" onClick={() => push(s)}>{s}</button>)}
               </div>
             )}
-            {!onlineEnabled && <p className="muted small"><WifiOff size={13} /> Online sources are turned off in Settings.</p>}
+            {!fallback && !onlineEnabled && <p className="muted small"><WifiOff size={13} /> Online sources are turned off in Settings.</p>}
             {!isEnglish && !offline?.length && <p className="muted small">Tip: import a StarDict dictionary for this language in Settings → Dictionaries.</p>}
+            {fallback && <div className="dict-from">From {fallback.source.name}</div>}
           </div>
+        )}
+        {!loading && shown?.entries.map((e, i) => (
+          <EntryView key={`${shown.source.id}-${i}`} entry={e} compact={compact && !expanded} onLookup={push} onHtmlClick={onHtmlClick} showWord={i > 0 || !!e.formOf || shown.source.kind !== 'offline'} />
+        ))}
+        {!loading && compact && !expanded && shown && shown.source.kind !== 'online' && hasMore(shown.entries) && (
+          <button className="link-btn" onClick={() => setExpanded(true)}>
+            {countSenses(shown.entries) > 4 ? `Show all ${countSenses(shown.entries)} definitions` : 'Show more'}
+          </button>
         )}
       </div>
 
+      {webOpen && (
+        <div className="dict-web" aria-label="Look up on the web">
+          {WEB_DICTIONARIES.map(d => (
+            <button key={d.name} className="chip-btn" onClick={() => openExternal(d.url(headword))}>{d.name}</button>
+          ))}
+        </div>
+      )}
       <div className="dict-foot">
         <button className="link-btn" onClick={() => openExternal(`https://translate.google.com/?sl=auto&tl=${translateTo}&text=${encodeURIComponent(translateText)}&op=translate`)}>
           <Languages size={14} />Translate
         </button>
-        <button className="link-btn" onClick={() => openExternal(`https://www.google.com/search?q=${encodeURIComponent(`define ${headword}`)}`)}>
+        <button className={`link-btn ${webOpen ? 'on' : ''}`} aria-expanded={webOpen} onClick={() => setWebOpen(o => !o)}>
           <ExternalLink size={14} />Web
         </button>
         <CopyButton text={headword} />
-        {current && typeof current === 'object' && current.source.kind !== 'online' && (
+        {shown && shown.source.kind !== 'online' && (
           <span className="dict-source"><Check size={12} />Offline</span>
         )}
       </div>
@@ -275,11 +320,24 @@ export const DictionaryView = ({ word: initial, context, lang, bookId, bookTitle
 }
 
 const countSenses = (entries: DictEntry[]) => entries.reduce((n, e) => n + (e.meanings?.reduce((m, x) => m + x.senses.length, 0) ?? 0), 0)
+
+/**
+ * What the short card shows of an entry: the first senses of the main part of speech and
+ * the first sense of up to two others ("bear": endure, carry… and the animal), leaving out
+ * phrases and parts of speech that are only slang, regional, rare or obsolete.
+ */
+const compactPlan = (meanings: Meaning[] = []) => {
+  const main = meanings.filter(m => !m.minor && m.pos !== 'phrase')
+  const list = (main.length ? main : meanings).slice(0, 3)
+  return list.map((m, i) => ({ meaning: m, senses: m.senses.slice(0, i ? 1 : list.length > 1 ? 3 : 4) }))
+}
+
 // whether the compact card (EntryView with compact) leaves anything out
 const hasMore = (entries: DictEntry[]) => entries.some(e =>
-  countSenses([e]) > 4 || !!e.etymology?.length || (e.translations?.senses.length ?? 0) > 3
+  compactPlan(e.meanings).reduce((n, p) => n + p.senses.length, 0) < countSenses([e])
+  || !!e.etymology?.length || (e.translations?.senses.length ?? 0) > 3
   || e.meanings?.some(m => m.synonyms?.length || m.antonyms?.length
-    || m.senses.some(s => s.examples.length > 1 || s.synonyms.length > 4 || s.antonyms.length > 4)))
+    || m.senses.some(s => s.examples.length > 1 || s.synonyms.length > 4 || s.antonyms.length > 4 || s.note)))
 
 const Chips = ({ synonyms = [], antonyms = [], max, onLookup }: { synonyms?: string[]; antonyms?: string[]; max: number; onLookup: (w: string) => void }) => {
   if (!synonyms.length && !antonyms.length) return null
@@ -335,7 +393,7 @@ const EntryView = ({ entry, compact, onLookup, onHtmlClick, showWord }: {
   onHtmlClick: (e: React.MouseEvent) => void
   showWord: boolean
 }) => {
-  let budget = compact ? 4 : Infinity
+  const plan = compact ? compactPlan(entry.meanings) : (entry.meanings ?? []).map(meaning => ({ meaning, senses: meaning.senses }))
   const translations = entry.translations?.senses.slice(0, compact ? 3 : 8)
   return (
     <div className="dict-entry">
@@ -356,32 +414,28 @@ const EntryView = ({ entry, compact, onLookup, onHtmlClick, showWord }: {
           ))}
         </div>
       )}
-      {entry.meanings?.map((m, mi) => {
-        if (budget <= 0) return null
-        const senses = m.senses.slice(0, budget)
-        budget -= senses.length
-        return (
-          <section key={mi}>
-            {(m.pos || m.display || !!m.forms?.length) && (
-              <div className="dict-pos">
-                {m.pos}
-                {m.display && m.display.toLowerCase() !== m.pos && <span className="dict-display">{m.display}</span>}
-                {!!m.forms?.length && <span className="dict-forms">{m.forms.join(', ')}</span>}
-              </div>
-            )}
-            <ol className="dict-senses">
-              {senses.map((s, si) => (
-                <li key={si}>
-                  <Definition sense={s} onLookup={onLookup} />
-                  {s.examples.slice(0, compact ? 1 : 3).map((ex, ei) => <div key={ei} className="dict-ex">{ex}</div>)}
-                  <Chips synonyms={s.synonyms} antonyms={s.antonyms} max={compact ? 4 : 8} onLookup={onLookup} />
-                </li>
-              ))}
-            </ol>
-            {!compact && <Chips synonyms={m.synonyms} antonyms={m.antonyms} max={12} onLookup={onLookup} />}
-          </section>
-        )
-      })}
+      {plan.map(({ meaning: m, senses }, mi) => (
+        <section key={mi}>
+          {(m.pos || m.display || !!m.forms?.length) && (
+            <div className="dict-pos">
+              {m.pos}
+              {m.display && m.display.toLowerCase() !== m.pos && <span className="dict-display">{m.display}</span>}
+              {!!m.forms?.length && <span className="dict-forms">{m.forms.join(', ')}</span>}
+            </div>
+          )}
+          <ol className="dict-senses">
+            {senses.map((s, si) => (
+              <li key={si}>
+                <Definition sense={s} onLookup={onLookup} />
+                {s.examples.slice(0, compact ? 1 : 3).map((ex, ei) => <div key={ei} className="dict-ex">{ex}</div>)}
+                {!compact && s.note && <div className="dict-note">{s.note}</div>}
+                <Chips synonyms={s.synonyms} antonyms={s.antonyms} max={compact ? 4 : 8} onLookup={onLookup} />
+              </li>
+            ))}
+          </ol>
+          {!compact && <Chips synonyms={m.synonyms} antonyms={m.antonyms} max={12} onLookup={onLookup} />}
+        </section>
+      ))}
       {!compact && !!entry.etymology?.length && (
         <div className="dict-etym">
           <div className="dict-pos">Origin</div>

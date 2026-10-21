@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // End-to-end smoke test: builds a tiny EPUB, imports it into the production
 // build (served by `vite preview`), turns pages, looks up an inflected word
-// in the offline dictionary and checks that reading progress is saved.
+// in the offline dictionary, checks that the dictionary picked stays picked,
+// and that reading progress is saved.
 //
 //   npm run test:e2e            (set CHROMIUM_PATH to use a specific Chromium)
 import assert from 'node:assert/strict'
@@ -47,6 +48,35 @@ const errors = []
 page.on('pageerror', e => errors.push(e.message))
 const step = name => console.log(`✓ ${name}`)
 const label = () => page.evaluate(() => document.querySelector('.info-left')?.textContent ?? '')
+const activeTab = () => page.locator('.dict-pop .dict-tabs [aria-selected=true]').innerText()
+
+/** Double-clicks a word on the visible page (inside the book's iframe) and waits for the dictionary. */
+const lookUp = async word => {
+  let pos = null
+  for (const frame of page.frames()) {
+    if (!frame.url().startsWith('blob:')) continue
+    const fb = await (await frame.frameElement()).boundingBox()
+    const r = await frame.evaluate(({ word, fx, vw }) => {
+      const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT)
+      while (walker.nextNode()) {
+        const n = walker.currentNode
+        for (const m of n.nodeValue.matchAll(new RegExp(`\\b${word}\\b`, 'g'))) {
+          const range = document.createRange()
+          range.setStart(n, m.index)
+          range.setEnd(n, m.index + m[0].length)
+          const b = range.getBoundingClientRect()
+          if (b.width && fx + b.x > 0 && fx + b.right < vw) return { x: b.x + b.width / 2, y: b.y + b.height / 2 }
+        }
+      }
+      return null
+    }, { word, fx: fb.x, vw: 1280 })
+    if (r) pos = { x: fb.x + r.x, y: fb.y + r.y }
+  }
+  assert.ok(pos, `found the word "${word}" on screen`)
+  await page.mouse.dblclick(pos.x, pos.y)
+  await page.waitForSelector('.dict-pop .dict-word h2', { timeout: 10_000 })
+  await page.waitForFunction(() => document.querySelector('.dict-pop .dict-entry, .dict-pop .dict-none') && !document.querySelector('.dict-pop .dict-loading'), null, { timeout: 10_000 })
+}
 
 try {
   await page.goto(url)
@@ -65,33 +95,31 @@ try {
   step(`turns pages (${first} → ${await label()})`)
 
   // double-click "running" inside the book iframe → offline dictionary shows "run"
-  let pos = null
-  for (const frame of page.frames()) {
-    if (!frame.url().startsWith('blob:')) continue
-    const fb = await (await frame.frameElement()).boundingBox()
-    const r = await frame.evaluate(({ fx, vw }) => {
-      const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT)
-      while (walker.nextNode()) {
-        const n = walker.currentNode
-        for (const m of n.nodeValue.matchAll(/running/g)) {
-          const range = document.createRange()
-          range.setStart(n, m.index)
-          range.setEnd(n, m.index + m[0].length)
-          const b = range.getBoundingClientRect()
-          if (b.width && fx + b.x > 0 && fx + b.right < vw) return { x: b.x + b.width / 2, y: b.y + b.height / 2 }
-        }
-      }
-      return null
-    }, { fx: fb.x, vw: 1280 })
-    if (r) pos = { x: fb.x + r.x, y: fb.y + r.y }
-  }
-  assert.ok(pos, 'found the word "running" on screen')
-  await page.mouse.dblclick(pos.x, pos.y)
-  await page.waitForSelector('.dict-pop .dict-word h2', { timeout: 10_000 })
+  await lookUp('running')
   await page.waitForSelector('.dict-pop .dict-entry', { timeout: 10_000 })
   const form = await page.locator('.dict-pop .dict-form').first().innerText()
   assert.match(form, /running\s*→\s*run/)
   step('looks up an inflected word offline (running → run)')
+
+  // the dictionary picked stays picked, even for a word it doesn't have
+  await page.locator('.dict-pop .dict-tabs button', { hasText: 'WordNet' }).click()
+  assert.equal(await activeTab(), 'WordNet')
+  await page.keyboard.press('Escape')
+  await lookUp('lanterns')
+  assert.equal(await activeTab(), 'WordNet')
+  assert.match(await page.locator('.dict-pop .dict-body').innerText(), /lantern/i)
+  await page.keyboard.press('Escape')
+  await lookUp('the')
+  assert.equal(await activeTab(), 'WordNet')
+  assert.match(await page.locator('.dict-pop .dict-none').innerText(), /No entry for the in WordNet[\s\S]*From Wiktionary/i)
+  step('keeps the dictionary picked, showing another one\'s entry when it has none')
+
+  await page.locator('.dict-pop .dict-tabs button', { hasText: "Webster's 1913" }).click()
+  await page.keyboard.press('Escape')
+  await lookUp('wondered')
+  assert.equal(await activeTab(), "Webster's 1913")
+  assert.match(await page.locator('.dict-pop .dict-body').innerText(), /wonder/i)
+  step("looks up in Webster's 1913 (wondered → wonder)")
 
   await page.keyboard.press('Escape')
   const saved = await label()

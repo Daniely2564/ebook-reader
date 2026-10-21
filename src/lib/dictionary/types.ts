@@ -8,6 +8,8 @@ export interface Sense {
   label?: string
   /** headword this sense points at ("simple past of run" → "run") */
   formOf?: string
+  /** usage note or further description (Webster's) */
+  note?: string
 }
 
 export interface Meaning {
@@ -19,6 +21,8 @@ export interface Meaning {
   forms?: string[]
   synonyms?: string[]
   antonyms?: string[]
+  /** only slang, regional, rare or obsolete senses: left out of the short card */
+  minor?: boolean
 }
 
 export interface DictEntry {

@@ -1,7 +1,7 @@
 import { ArrowDown, ArrowUp, BookA, Database, Download, Headphones, Info, Monitor, Moon, Plus, Sun, Trash, Upload } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { deleteUserDict, exportBackup, getUserDicts, importBackup, putUserDict, type UserDictRecord } from '../lib/db'
-import { getBuiltinSources } from '../lib/dictionary'
+import { getBuiltinSources, listSources, type DictSource } from '../lib/dictionary'
 import { forgetStarDict, importStarDict } from '../lib/dictionary/stardict'
 import { formatSize } from '../lib/format'
 import { exportFile, isNative } from '../lib/platform'
@@ -70,6 +70,7 @@ const Dictionaries = () => {
   const s = useSettings()
   const [builtin, setBuiltin] = useState<Awaited<ReturnType<typeof getBuiltinSources>> | null>(null)
   const [dicts, setDicts] = useState<UserDictRecord[] | null>(null)
+  const [sources, setSources] = useState<DictSource[]>([])
   const [busy, setBusy] = useState(false)
   const input = useRef<HTMLInputElement>(null)
   const load = () => getUserDicts().then(setDicts)
@@ -77,6 +78,14 @@ const Dictionaries = () => {
     getBuiltinSources().then(setBuiltin)
     load()
   }, [])
+  useEffect(() => {
+    listSources().then(setSources)
+  }, [s.dictDisabled, s.onlineLookup, s.translateTo, dicts])
+  const defaultTab = s.dictTabs.en ?? ''
+  const setDefault = (id: string) => {
+    const { en: _, ...others } = s.dictTabs
+    s.set({ dictTabs: id ? { ...others, en: id } : others })
+  }
 
   const onFiles = async (files: FileList | null) => {
     if (!files?.length) return
@@ -111,8 +120,18 @@ const Dictionaries = () => {
 
   return (
     <div className="settings-section">
+      <h3>Default dictionary</h3>
+      <p className="muted small">Lookups open in this dictionary, and the card remembers the one you pick in it. When it has no entry for a word, the first one that does is shown below.</p>
+      <div className="typo-row">
+        <span>Open lookups in</span>
+        <select className="select" value={sources.some(d => d.id === defaultTab) ? defaultTab : ''} onChange={e => setDefault(e.target.value)}>
+          <option value="">First with an entry</option>
+          {sources.map(d => <option key={d.id} value={d.id}>{d.name}{d.kind === 'online' ? ' (online)' : ''}</option>)}
+        </select>
+      </div>
+
       <h3>Built-in dictionaries</h3>
-      <p className="muted small">English dictionaries that work offline. The dictionary opens on the tab you used last.</p>
+      <p className="muted small">English dictionaries that work offline.</p>
       {builtin === null ? <Spinner /> : (
         <ul className="dict-list">
           {builtin.map(d => {
@@ -169,7 +188,7 @@ const Dictionaries = () => {
       <Button onClick={() => input.current?.click()} disabled={busy}>{busy ? <Spinner size={16} /> : <Plus size={16} />}Import StarDict dictionary</Button>
 
       <h3>Online</h3>
-      <Switch label="Use online sources when available" hint="Wiktionary.org (all languages), Wikipedia and recorded pronunciations. Nothing is sent unless you open a lookup." checked={s.onlineLookup} onChange={v => s.set({ onlineLookup: v })} />
+      <Switch label="Use online sources when available" hint="Wiktionary.org (all languages), Wikipedia and recorded pronunciations. Nothing is sent unless you open a lookup. The Web button on the card also links to Merriam-Webster, Cambridge, Oxford Learner’s, Collins and others." checked={s.onlineLookup} onChange={v => s.set({ onlineLookup: v })} />
 
       <h3>My language</h3>
       <p className="muted small">Shows translations of English words in the dictionary, and is the target of the Translate button.</p>
@@ -290,7 +309,8 @@ const About = () => (
       <li><b>foliate-js</b> by John Factotum, MIT — EPUB, MOBI, FB2 and CBZ rendering</li>
       <li><b>PDF.js</b> by Mozilla, Apache-2.0 — PDF rendering</li>
       <li><b>Wiktionary</b> contributors (English and Korean editions), via kaikki.org/Wiktextract — definitions, examples, pronunciations, origins and translations (CC BY-SA 4.0)</li>
-      <li><b>WordNet 3.1</b>, Princeton University — definitions and synonyms (WordNet License)</li>
+      <li><b>WordNet 3.1</b>, Princeton University — definitions, synonyms and sense frequencies (WordNet License)</li>
+      <li><b>Webster’s Revised Unabridged Dictionary</b> (1913), via Project Gutenberg — definitions and quotations (public domain)</li>
       <li><b>CMU Pronouncing Dictionary</b>, Carnegie Mellon University — pronunciations (BSD)</li>
       <li><b>Wikimedia Commons</b> contributors — recorded pronunciations, played online (CC BY-SA)</li>
       <li><b>Literata, Source Serif 4, Merriweather, Inter, Atkinson Hyperlegible, OpenDyslexic</b> — SIL Open Font License</li>

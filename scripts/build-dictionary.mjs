@@ -11,25 +11,33 @@
 //     (`wndb-with-exceptions`)
 //   - CMU Pronouncing Dictionary           WordNet pronunciations, as IPA
 //     (`cmu-pronouncing-dictionary`)
+//   - Webster's Revised Unabridged         a second full dictionary, parsed by webster.mjs
+//     Dictionary (1913, public domain)
+//     (`websters-english-dictionary`)
+//
+// Senses are put in reading order (common meaning first) by sense-order.mjs, using the
+// WordNet corpus counts in index.sense.
 //
 // Output (public/dict/):
 //   meta.json            build info and available sources
 //   words.bin            gzip'd sorted headword list (autocomplete, "did you mean")
 //   exc.json             irregular inflections per part of speech (WordNet)
-//   wk/, wn/, bi/<lang>/ gzip'd JSON shards: <key>.bin, keyed by the first two
-//                        letters (three for large prefixes, listed in index.json)
+//   wk/, wn/, wb/,       gzip'd JSON shards: <key>.bin, keyed by the first two
+//   bi/<lang>/           letters (three for large prefixes, listed in index.json)
 //   tr/<lang>/           Wiktionary translation tables for one language, sharded by first letter
 //
 // WordNet shard entry: { "<word>": { "i": "<ipa>", "m": [[pos, [[definition, examples[], synonyms[], antonyms[], typeOf[]], …]], …] } }
-// Wiktionary entries keep the distilled format documented in distill-wiktionary.mjs.
+// Wiktionary and Webster entries use the distilled format documented in distill-wiktionary.mjs.
 
 import fs from 'node:fs'
 import path from 'node:path'
 import { createRequire } from 'node:module'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { gunzipSync, gzipSync } from 'node:zlib'
+import { createOrdering } from './sense-order.mjs'
+import { parseWebster } from './webster.mjs'
 
-const VERSION = 7
+const VERSION = 8
 const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
 const out = path.join(root, 'public', 'dict')
 const require = createRequire(import.meta.url)
@@ -38,10 +46,14 @@ if (process.argv.includes('--if-missing')) {
   try {
     const metaFile = path.join(out, 'meta.json')
     const meta = JSON.parse(fs.readFileSync(metaFile, 'utf8'))
-    // rebuild when the distilled Wiktionary data is newer than the last build
+    // rebuild when the distilled Wiktionary data or these scripts are newer than the last build
     const built = fs.statSync(metaFile).mtimeMs
     const data = path.join(root, 'data', 'wiktionary')
-    const stale = fs.existsSync(data) && fs.readdirSync(data).some(f => fs.statSync(path.join(data, f)).mtimeMs > built)
+    const inputs = [
+      ...(fs.existsSync(data) ? fs.readdirSync(data).map(f => path.join(data, f)) : []),
+      ...['build-dictionary.mjs', 'webster.mjs', 'sense-order.mjs'].map(f => path.join(root, 'scripts', f)),
+    ]
+    const stale = inputs.some(f => fs.statSync(f).mtimeMs > built)
     if (meta.version === VERSION && !stale) process.exit(0)
   } catch { /* build it */ }
 }
@@ -131,7 +143,8 @@ const arpaToIpa = arpa => {
   }
   return ph.map((p, i) => (marks.get(i) ?? '') + p.sym).join('')
 }
-const { dictionary: cmu } = await import(path.join(cmuDir, 'index.js'))
+// a file URL: Windows paths ("D:\\…") are not valid import specifiers
+const { dictionary: cmu } = await import(pathToFileURL(path.join(cmuDir, 'index.js')).href)
 const ipaFor = word => {
   const parts = word.split(/[\s-]+/)
   if (parts.length > 3) return null
@@ -190,6 +203,20 @@ for (const [pos, file] of Object.entries(POS_FILES)) {
     else entry.m.push([pos, senses])
   }
 }
+
+// ---------------------------------------------------------------- sense frequencies
+// index.sense: "bear%2:42:01:: 02636952 1 23" → the first verb sense of "bear" was tagged 23 times
+const senseCounts = new Map()
+for (const line of fs.readFileSync(path.join(wnDir, 'index.sense'), 'utf8').split('\n')) {
+  if (!line) continue
+  const [key, , num, cnt] = line.split(' ')
+  const pct = key.indexOf('%')
+  const pos = 'xnvara'[+key[pct + 1]]
+  const k = `${clean(key.slice(0, pct))}|${pos}`
+  if (!senseCounts.has(k)) senseCounts.set(k, [])
+  senseCounts.get(k)[+num - 1] = +cnt
+}
+const ordering = createOrdering(entries, senseCounts)
 
 let withIpa = 0
 for (const [word, entry] of entries) {
@@ -269,15 +296,21 @@ fs.rmSync(out, { recursive: true, force: true })
 fs.mkdirSync(out, { recursive: true })
 
 const sources = {}
-sources.wordnet = writeShards('wn', new Map([...entries].map(([w, e]) => [w, { ...(e.i ? { i: e.i } : {}), m: e.m }])))
+sources.wordnet = writeShards('wn', new Map([...entries].map(([w, e]) => [w, { ...(e.i ? { i: e.i } : {}), m: ordering.orderWordNet(w, e.m) }])))
 
 const wkDir = path.join(root, 'data', 'wiktionary')
 const allWords = new Set(entries.keys())
+// parts of speech Wiktionary gives each word, for Webster's
+const wkPos = new Map()
 if (fs.existsSync(path.join(wkDir, 'en.jsonl.gz'))) {
   const wk = readLines(path.join(wkDir, 'en.jsonl.gz'))
   for (const [w, e] of wk) {
     if (e.r) continue
     allWords.add(w)
+    if (e.m) {
+      wkPos.set(w, new Set(e.m.map(g => g.p)))
+      e.m = ordering.orderGroups(w, e.m, { fill: true })
+    }
     // Wiktionary only had a weak, letter or regional transcription ("to" /t̪oː/): use CMUdict's
     if ('iq' in e) {
       const ipa = ipaFor(w)
@@ -297,6 +330,25 @@ if (fs.existsSync(path.join(wkDir, 'en.jsonl.gz'))) {
   }
 } else {
   console.warn('data/wiktionary/en.jsonl.gz not found — building WordNet only')
+}
+
+// ---------------------------------------------------------------- Webster's 1913
+{
+  const POS_NAME = { n: 'noun', v: 'verb', a: 'adj', r: 'adv' }
+  const wnPos = new Map()
+  for (const [w, e] of entries) wnPos.set(w, new Set(e.m.map(([p]) => POS_NAME[p])))
+  const webster = require('websters-english-dictionary').dictionary()
+  const wb = new Map()
+  for (const [word, text] of Object.entries(webster)) {
+    const key = word.toLowerCase()
+    const knownPos = new Set([...(wnPos.get(key) ?? []), ...(wkPos.get(key) ?? [])])
+    const e = parseWebster(key, text, { posOf: w => wnPos.get(w), knownPos: knownPos.size ? knownPos : undefined })
+    if (!e) continue
+    e.m = ordering.orderGroups(key, e.m)
+    wb.set(key, e)
+    allWords.add(key)
+  }
+  sources.webster = writeShards('wb', wb)
 }
 
 const words = [...allWords].sort()
@@ -322,6 +374,10 @@ fs.writeFileSync(path.join(out, 'LICENSES.txt'), [
   'Attribution-ShareAlike 4.0 License (https://creativecommons.org/licenses/by-sa/4.0/).',
   'Pronunciation recordings are played from Wikimedia Commons under their own licenses.',
   '',
+  "== Webster's Revised Unabridged Dictionary (1913) ==",
+  'Public domain. Text from Project Gutenberg (https://www.gutenberg.org), as packaged by the',
+  'websters-english-dictionary npm module (https://github.com/andrewosh/websters-english-dictionary).',
+  '',
   '== WordNet 3.1 ==',
   fs.readFileSync(path.join(wnDir, '..', 'LICENSE'), 'utf8'),
   '',
@@ -338,5 +394,5 @@ const meta = {
   built: new Date().toISOString(),
 }
 fs.writeFileSync(path.join(out, 'meta.json'), JSON.stringify(meta, null, 2))
-console.log(`Dictionary: ${words.length} headwords — Wiktionary ${sources.wiktionary?.words ?? 0}, WordNet ${sources.wordnet.words}, ` +
+console.log(`Dictionary: ${words.length} headwords — Wiktionary ${sources.wiktionary?.words ?? 0}, WordNet ${sources.wordnet.words}, Webster ${sources.webster.words}, ` +
   `bilingual ${Object.keys(sources.bilingual ?? {}).join(', ') || 'none'} — ${(totalBytes / 1048576).toFixed(1)} MB compressed — ${((Date.now() - t0) / 1000).toFixed(1)}s`)

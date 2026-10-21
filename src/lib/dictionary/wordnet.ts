@@ -14,6 +14,7 @@ export interface DictMeta {
   sources: {
     wordnet: { words: number }
     wiktionary?: { words: number; redirects: number }
+    webster?: { words: number }
     bilingual?: Record<string, { words: number }>
     translations?: Record<string, { words: number }>
   }

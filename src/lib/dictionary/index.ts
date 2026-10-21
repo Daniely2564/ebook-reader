@@ -3,6 +3,7 @@ import { getSettings } from '../settings'
 import { lookupWikipedia, lookupWiktionary } from './online'
 import { getStarDict } from './stardict'
 import type { DictEntry, DictResult, DictSource } from './types'
+import { lookupWebster } from './webster'
 import { getTranslations, lookupBilingual, lookupWiktionaryOffline, translationLang } from './wiktionary'
 import { getDictMeta, lookupWordNet, normalizeQuery, queryVariants, similarWords } from './wordnet'
 
@@ -20,6 +21,7 @@ export const languageName = (code: string) => {
 
 export const WIKTIONARY: DictSource = { id: 'wiktionary', name: 'Wiktionary', kind: 'offline' }
 export const WORDNET: DictSource = { id: 'wordnet', name: 'WordNet', kind: 'offline' }
+export const WEBSTER: DictSource = { id: 'webster', name: "Webster's 1913", kind: 'offline' }
 export const WIKTIONARY_WEB: DictSource = { id: 'wiktionary-web', name: 'Wiktionary.org', kind: 'online' }
 export const WIKIPEDIA: DictSource = { id: 'wikipedia', name: 'Wikipedia', kind: 'online' }
 export const ONLINE_SOURCES = [WIKTIONARY_WEB, WIKIPEDIA]
@@ -33,8 +35,26 @@ export const getBuiltinSources = async (): Promise<(DictSource & { words: number
     { ...WIKTIONARY, words: (meta?.sources.wiktionary?.words ?? 0) - (meta?.sources.wiktionary?.redirects ?? 0), description: 'Definitions, usage labels, examples, forms, origins and pronunciation' },
     { ...WORDNET, words: meta?.sources.wordnet.words ?? 0, description: 'Concise definitions with synonyms and opposites (Princeton WordNet 3.1)' },
   ]
+  if (meta?.sources.webster)
+    out.push({ ...WEBSTER, words: meta.sources.webster.words, description: "Webster's Revised Unabridged Dictionary: full, literary definitions with quotations, good for older books" })
   for (const [lang, info] of Object.entries(meta?.sources.bilingual ?? {}) as [string, { words: number }][])
     out.push({ id: `bi-${lang}`, name: `English–${languageName(lang)}`, kind: 'offline', words: info.words, description: `English words explained in ${languageName(lang)} (${languageName(lang)} Wiktionary)` })
+  return out
+}
+
+/** Every dictionary a lookup can show, in tab order: built-in, imported, then online. */
+export const listSources = async (): Promise<DictSource[]> => {
+  const { dictDisabled, translateTo, onlineLookup } = getSettings()
+  const off = new Set(dictDisabled)
+  const meta = await getDictMeta()
+  const myLang = translateTo.split('-')[0]
+  const out: DictSource[] = []
+  if (meta?.sources.wiktionary && !off.has(WIKTIONARY.id)) out.push(WIKTIONARY)
+  if (meta?.sources.bilingual?.[myLang] && !off.has(`bi-${myLang}`)) out.push({ id: `bi-${myLang}`, name: languageName(myLang), kind: 'offline' })
+  if (!off.has(WORDNET.id)) out.push(WORDNET)
+  if (meta?.sources.webster && !off.has(WEBSTER.id)) out.push(WEBSTER)
+  for (const d of (await getUserDicts().catch(() => [])).filter(d => d.enabled)) out.push({ id: d.id, name: d.name, kind: 'user' })
+  if (onlineLookup) out.push(...ONLINE_SOURCES)
   return out
 }
 
@@ -81,6 +101,10 @@ export const lookupOffline = async (raw: string): Promise<DictResult[]> => {
     if (entries.length) results.push({ source: { id: biId, name: languageName(myLang), kind: 'offline' }, entries })
   }
   if (wn.length) results.push({ source: WORDNET, entries: wn })
+  if (meta?.sources.webster && !off.has(WEBSTER.id)) {
+    const entries = await safe(lookupWebster(raw, [...wk, ...wn]), "Webster's")
+    if (entries.length) results.push({ source: WEBSTER, entries })
+  }
 
   for (const record of dicts.filter(d => d.enabled)) {
     try {
@@ -100,6 +124,7 @@ export const lookupOffline = async (raw: string): Promise<DictResult[]> => {
   return results
 }
 
+/** The online entry, or null when the source has none; throws when the source can't be reached. */
 export const lookupOnline = async (raw: string, source: OnlineSourceId, lang?: string, signal?: AbortSignal): Promise<DictResult | null> => {
   if (!getSettings().onlineLookup) return null
   const query = normalizeQuery(raw)

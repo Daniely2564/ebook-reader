@@ -4,9 +4,10 @@ import { ShardSource } from './shards'
 import { POS_LABEL, type DictEntry, type Meaning, type Sense } from './types'
 import { inWordNet, irregularBases, lemmaCandidates, normalizeQuery, queryVariants, spellingVariants, stemOf } from './wordnet'
 
-type WkSense = { g: string; l?: string; x?: string[]; s?: string[]; a?: string[]; f?: string }
-type WkGroup = { p: string; s: WkSense[]; w?: string; i?: string[]; sy?: string[]; an?: string[] }
-type WkEntry = { m?: WkGroup[]; i?: string[]; a?: string; e?: string[]; r?: [string, string][] }
+type WkSense = { g: string; l?: string; x?: string[]; s?: string[]; a?: string[]; f?: string; n?: string }
+type WkGroup = { p: string; s: WkSense[]; w?: string; i?: string[]; sy?: string[]; an?: string[]; lo?: 1 }
+/** An entry in the distilled format (Wiktionary, the bilingual dictionaries, Webster's). */
+export type WkEntry = { m?: WkGroup[]; i?: string[]; a?: string; e?: string[]; r?: [string, string][] }
 
 const COMMONS = 'https://upload.wikimedia.org/wikipedia/commons/'
 const wiktionary = new ShardSource<WkEntry>('dict/wk')
@@ -48,6 +49,7 @@ const toSense = (s: WkSense): Sense => ({
   typeOf: [],
   label: s.l,
   formOf: targetOf(s),
+  note: s.n,
 })
 
 // Case only says something when it isn't the usual sentence or title case: "RAN", "iPod".
@@ -57,7 +59,7 @@ const meaningfulCase = (original: string) =>
 // exact-case groups first ("RAN" for RAN), then lowercase ones, then other spellings ("GO" under go)
 const rank = (g: WkGroup, casing: string) => ((g.w ?? '') === casing ? 0 : g.w ? 2 : 1)
 
-const toEntry = (word: string, raw: WkEntry, groups = raw.m ?? [], casing = ''): DictEntry => ({
+export const toEntry = (word: string, raw: WkEntry, groups = raw.m ?? [], casing = ''): DictEntry => ({
   word,
   ipa: raw.i?.[0],
   ipaAlt: raw.i?.[1],
@@ -72,6 +74,7 @@ const toEntry = (word: string, raw: WkEntry, groups = raw.m ?? [], casing = ''):
       forms: g.i?.filter(f => /\p{L}/u.test(f)),
       synonyms: g.sy,
       antonyms: g.an,
+      minor: g.lo ? true : undefined,
       senses: g.s.map(toSense),
     })),
 })

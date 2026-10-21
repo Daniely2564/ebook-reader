@@ -11,24 +11,41 @@ const langName = (code: string) => {
   }
 }
 
+export class NotFoundOnline extends Error {}
+
+// a slow or captive network fails the lookup instead of leaving it loading
+const TIMEOUT = 12_000
+
 const getJson = async (url: string, signal?: AbortSignal) => {
-  const res = await fetch(url, { signal, headers: { Accept: 'application/json' } })
-  if (!res.ok) throw new Error(`${res.status}`)
-  return res.json()
+  // (AbortSignal.any and .timeout are missing from older Android WebViews)
+  const ctrl = new AbortController()
+  const timer = setTimeout(() => ctrl.abort(), TIMEOUT)
+  const stop = () => ctrl.abort()
+  signal?.addEventListener('abort', stop)
+  try {
+    const res = await fetch(url, { signal: ctrl.signal, headers: { Accept: 'application/json' } })
+    if (res.status === 404) throw new NotFoundOnline(url)
+    if (!res.ok) throw new Error(`${res.status}`)
+    return await res.json()
+  } finally {
+    clearTimeout(timer)
+    signal?.removeEventListener('abort', stop)
+  }
 }
+
+/** null when the page doesn't exist; other failures (offline, timeout) are thrown. */
+const orNull = <T>(p: Promise<T>) => p.catch(e => {
+  if (e instanceof NotFoundOnline) return null
+  throw e
+})
 
 interface WiktionaryDef { definition: string; examples?: string[] }
 interface WiktionaryUsage { partOfSpeech: string; language: string; definitions: WiktionaryDef[] }
 
 /** Wiktionary definitions for any language; the book's language is listed first. */
 export const lookupWiktionary = async (word: string, lang = 'en', signal?: AbortSignal): Promise<DictEntry[]> => {
-  const tryWord = async (w: string) => {
-    try {
-      return await getJson(`https://en.wiktionary.org/api/rest_v1/page/definition/${encodeURIComponent(w)}?redirect=true`, signal) as Record<string, WiktionaryUsage[]>
-    } catch {
-      return null
-    }
-  }
+  const tryWord = (w: string) =>
+    orNull(getJson(`https://en.wiktionary.org/api/rest_v1/page/definition/${encodeURIComponent(w)}?redirect=true`, signal) as Promise<Record<string, WiktionaryUsage[]>>)
   let data = await tryWord(word)
   if (!data && word !== word.toLowerCase()) data = await tryWord(word.toLowerCase())
   if (!data) return []
@@ -66,13 +83,8 @@ export const lookupPronunciation = async (word: string, signal?: AbortSignal) =>
 
 export const lookupWikipedia = async (query: string, lang = 'en', signal?: AbortSignal): Promise<DictEntry[]> => {
   const tryLang = async (l: string) => {
-    try {
-      const d = await getJson(`https://${l}.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(query.replace(/ /g, '_'))}?redirect=true`, signal)
-      if (d.type === 'disambiguation' && !d.extract) return null
-      return d
-    } catch {
-      return null
-    }
+    const d = await orNull(getJson(`https://${l}.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(query.replace(/ /g, '_'))}?redirect=true`, signal))
+    return d && !(d.type === 'disambiguation' && !d.extract) ? d : null
   }
   const d = (lang !== 'en' && await tryLang(lang)) || await tryLang('en')
   if (!d?.extract) return []

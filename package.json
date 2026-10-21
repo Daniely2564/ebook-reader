@@ -69,6 +69,7 @@
     "typescript": "^7.0.2",
     "vite": "^8.3.4",
     "wait-on": "^9.5.1",
+    "websters-english-dictionary": "^2.0.0",
     "wndb-with-exceptions": "^3.0.2",
     "wordnet-db": "^3.1.14"
   }

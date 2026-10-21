@@ -19,13 +19,14 @@ import fs from 'node:fs'
 import path from 'node:path'
 import readline from 'node:readline'
 import { createRequire } from 'node:module'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { createGunzip, gzipSync } from 'node:zlib'
 
 const args = process.argv.slice(2)
 const input = args.find(a => !a.startsWith('--') && !args[args.indexOf(a) - 1]?.startsWith('--'))
 if (!input) throw new Error('usage: distill-wiktionary.mjs <kaikki English .jsonl.gz> [--native ko=<ko-extract.jsonl.gz>] [--out dir]')
 const natives = args.flatMap((a, i) => (a === '--native' ? [args[i + 1].split('=')] : []))
-const root = path.dirname(path.dirname(new URL(import.meta.url).pathname))
+const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
 const outDir = args.includes('--out') ? args[args.indexOf('--out') + 1] : path.join(root, 'data', 'wiktionary')
 fs.mkdirSync(outDir, { recursive: true })
 const require = createRequire(import.meta.url)
@@ -45,7 +46,8 @@ for (const f of ['noun', 'verb', 'adj', 'adv']) {
     if (form) exceptions.set(form.replace(/_/g, ' '), bases.map(b => b.replace(/_/g, ' ')))
   }
 }
-const { dictionary: cmu } = await import(path.join(path.dirname(require.resolve('cmu-pronouncing-dictionary/package.json')), 'index.js'))
+// a file URL: Windows paths ("D:\\…") are not valid import specifiers
+const { dictionary: cmu } = await import(pathToFileURL(path.join(path.dirname(require.resolve('cmu-pronouncing-dictionary/package.json')), 'index.js')).href)
 
 // the same detachment rules the app applies at lookup time (src/lib/dictionary/wordnet.ts)
 const RULES = [['s', ''], ['ses', 's'], ['xes', 'x'], ['zes', 'z'], ['ches', 'ch'], ['shes', 'sh'], ['men', 'man'], ['ies', 'y'],
@@ -190,7 +192,10 @@ for await (const line of open(input)) {
   if (ant.length) group.an = ant
   const same = e.groups.find(g => g.p === group.p && g.w === group.w)
   if (same) {
-    for (const s of group.s) if (!same.s.some(x => x.g === s.g)) same.s.push(s)
+    // another etymology ("set": the collection, after the punch for nails); trimSenses
+    // takes the first senses of each
+    same._parts = (same._parts ?? 1) + 1
+    for (const s of group.s) if (!same.s.some(x => x.g === s.g)) same.s.push({ ...s, _e: same._parts - 1 })
     same._forms ??= group._forms
     if (group.sy) same.sy = [...new Set([...(same.sy ?? []), ...group.sy])].slice(0, 8)
     if (group.an) same.an = [...new Set([...(same.an ?? []), ...group.an])].slice(0, 5)
@@ -234,8 +239,17 @@ const tierOf = (key, e) => {
 }
 const trimSenses = (senses, max) => {
   if (senses.length <= max) return senses
-  const main = senses.filter(s => !s._demote)
-  const keep = new Set([...main.slice(0, max), ...senses.filter(s => s._demote).slice(0, Math.max(0, max - main.length))])
+  // the n-th sense of the k-th etymology ranks n × k, so the first etymology leads but the
+  // others' main senses are kept too; demoted senses only fill what's left
+  const rank = new Map()
+  const count = new Map()
+  for (const s of senses) {
+    const e = s._e ?? 0
+    const n = (count.get(e) ?? 0) + 1
+    count.set(e, n)
+    rank.set(s, n * (e + 1) + (s._demote ? 1e6 : 0))
+  }
+  const keep = new Set([...senses].sort((a, b) => rank.get(a) - rank.get(b)).slice(0, max))
   return senses.filter(s => keep.has(s))
 }
 
@@ -263,7 +277,7 @@ for (const [key, e] of raw) {
   const maxEx = tier === 1 ? 2 : 1
   const groups = []
   for (const g of e.groups) {
-    const s = trimSenses(g.s, maxSenses).map(({ _x, _demote, _own, ...rest }) => {
+    const s = trimSenses(g.s, maxSenses).map(({ _x, _demote, _own, _e, ...rest }) => {
       const x = rest.f ? [] : examplesOf(_x, maxEx)
       return x.length ? { ...rest, x } : rest
     })

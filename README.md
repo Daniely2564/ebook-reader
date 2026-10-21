@@ -1,6 +1,6 @@
 # Lumen Reader
 
-A calm, fast ebook reader for **desktop (Electron)** and **Android (Capacitor)**. It opens EPUB, PDF, MOBI/AZW3, FB2 and CBZ files and includes an **offline English dictionary** built from Wiktionary and WordNet (228,000+ words and phrases). Double-click (or long-press) any word to look it up, even without internet.
+A calm, fast ebook reader for **desktop (Electron)** and **Android (Capacitor)**. It opens EPUB, PDF, MOBI/AZW3, FB2 and CBZ files and includes **offline English dictionaries** built from Wiktionary, WordNet and Webster's 1913 (280,000+ words and phrases). Double-click (or long-press) any word to look it up, even without internet.
 
 ![Library](docs/screenshots/library-dark.jpg)
 
@@ -24,14 +24,16 @@ A calm, fast ebook reader for **desktop (Electron)** and **Android (Capacitor)**
 - Table of contents, full-text search with highlighted results, footnote popups, a "Back to page X" chip after jumps, and reading position restore.
 
 **Dictionary and language**
-- Built-in offline dictionaries (about 43 MB):
+- Built-in offline dictionaries (about 51 MB):
   - **Wiktionary**: 177,000 English headwords plus 230,000 inflected, archaic and alternative forms, with usage labels (*transitive*, *archaic*, *botany*…), examples, synonyms, irregular forms, US/UK IPA, word origins, and recorded pronunciations from Wikimedia Commons (played when online).
   - **WordNet 3.1**: concise definitions with synonyms and opposites, plus CMU Pronouncing Dictionary IPA.
+  - **Webster's Revised Unabridged Dictionary (1913)**: 102,000 entries with full, literary definitions, quotations, synonyms and phrases; good for older books (public domain).
   - **English–Korean** (from the Korean Wiktionary, 15,000 words), and translations of 40,000 common words into 21 languages, shown for the language picked under *My language*.
 - Understands inflections and old spellings (`running → run`, `geese → goose`, `went → go`, `hath → have`, `colour → color`, `'tis`, `o'er`) and offers "did you mean" suggestions.
-- The dictionary card opens on the tab you used last (per book language), and each built-in dictionary can be turned off in Settings.
+- Senses come in reading order: the part of speech a word is mostly used as first (*bear* → verb, *still* → adverb), then common meanings, with obsolete, rare, slang and specialist senses last. Frequencies come from WordNet's tagged corpus, which also fills in a few frequent meanings the distilled Wiktionary entries lack (*set* → a collection).
+- The dictionary card opens on the dictionary you picked last (per book language) or on the default chosen in Settings, and stays there: when it has no entry for a word, or can't be reached, it says so and shows another dictionary's entry below. Each built-in dictionary can be turned off.
 - Import **StarDict** dictionaries (`.ifo/.idx/.dict(.dz)`, or `.zip`/`.tar.gz`) for any language. `.dict.dz` files are read with random access, so big dictionaries stay fast.
-- Optional online sources: Wiktionary.org (all languages), Wikipedia and recorded pronunciations, plus one-tap Google Translate.
+- Optional online sources: Wiktionary.org (all languages), Wikipedia and recorded pronunciations, plus one-tap Google Translate and links to Merriam-Webster, Cambridge, Oxford Learner's, Collins, Longman, Dictionary.com, Vocabulary.com and Etymonline.
 - Save words to **Vocabulary** with the sentence you found them in, review them as flashcards, and export to CSV (Anki-friendly).
 
 **Notes and more**
@@ -51,7 +53,7 @@ npm run dev            # web version at http://localhost:5173
 npm run electron:dev   # desktop app with hot reload
 ```
 
-`npm run dev` and `npm run build` first run `scripts/prepare.mjs`, which compiles the offline dictionaries into `public/dict/` (about 15 s) and copies PDF.js assets into `public/pdfjs/`. Both folders are generated and git-ignored.
+`npm run dev` and `npm run build` first run `scripts/prepare.mjs`, which compiles the offline dictionaries into `public/dict/` (about a minute, and only when they or their sources change) and copies PDF.js assets into `public/pdfjs/`. Both folders are generated and git-ignored.
 
 ### Desktop packages
 
@@ -98,7 +100,9 @@ A few values are placeholders. Replace them with your own:
 electron/            main process (app:// protocol, file associations, menus) and preload bridge
 android/             Capacitor Android project
 scripts/
-  build-dictionary.mjs     Wiktionary + WordNet + CMUdict → gzip shards in public/dict
+  build-dictionary.mjs     Wiktionary + WordNet + Webster + CMUdict → gzip shards in public/dict
+  webster.mjs              parses Webster's 1913 into the same entry format as Wiktionary
+  sense-order.mjs          puts senses in reading order using WordNet's corpus frequencies
   distill-wiktionary.mjs   distills kaikki.org Wiktionary dumps into data/wiktionary (run when updating)
   prepare.mjs              runs the dictionary build and copies PDF.js assets
   generate-icons.mjs       desktop and Android icons from public/icon.svg
@@ -121,4 +125,4 @@ tests/smoke.mjs            end-to-end test
 ## Licenses
 
 Lumen Reader is MIT licensed. Bundled data and libraries keep their own licenses:
-Wiktionary content from the English and Korean editions via kaikki.org (CC BY-SA 4.0, see `public/dict/LICENSES.txt` after building), WordNet 3.1 (WordNet License), CMU Pronouncing Dictionary (BSD), foliate-js (MIT), PDF.js (Apache-2.0), and the fonts (SIL Open Font License).
+Wiktionary content from the English and Korean editions via kaikki.org (CC BY-SA 4.0, see `public/dict/LICENSES.txt` after building), WordNet 3.1 (WordNet License), Webster's Revised Unabridged Dictionary (1913, public domain, via Project Gutenberg), CMU Pronouncing Dictionary (BSD), foliate-js (MIT), PDF.js (Apache-2.0), and the fonts (SIL Open Font License).
