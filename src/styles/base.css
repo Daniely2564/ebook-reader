@@ -365,6 +365,8 @@ input:focus-visible + .switch { outline: 2px solid var(--accent); outline-offset
 .dict-list li { display: flex; align-items: center; gap: 4px; padding: 8px 8px 8px 14px; }
 .dict-list-main { flex: 1; display: grid; min-width: 0; }
 .dict-list-main span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dict-builtin { gap: 12px !important; }
+.dict-builtin > svg { color: var(--accent); flex: none; }
 .about-brand { display: flex; align-items: center; gap: 16px; margin: 12px 0 14px; }
 .about-brand img { border-radius: 14px; box-shadow: var(--shadow); }
 .about-brand h3 { font: 650 22px var(--font-serif); text-transform: none; letter-spacing: 0; color: var(--text); margin: 0; }

@@ -449,6 +449,8 @@ export class Paginator extends HTMLElement {
     #touchState
     #touchScrolled
     #lastVisibleRange
+    // [Lumen] last scroll offset set by the paginator itself (paginated mode)
+    #allowedScroll = null
     constructor() {
         super()
         this.#root.innerHTML = `<style>
@@ -556,6 +558,17 @@ export class Paginator extends HTMLElement {
         this.#footer = this.#root.getElementById('footer')
 
         this.#observer.observe(this.#container)
+        // [Lumen] In paginated mode the container must only ever rest on page
+        // boundaries. The browser also scrolls it on its own (revealing the end
+        // of a text selection while a selection handle is dragged, selection
+        // autoscroll, find-in-page…), which leaves the view stuck between two
+        // pages. Undo any scroll the paginator didn't make.
+        this.#container.addEventListener('scroll', () => {
+            if (this.scrolled || this.#allowedScroll == null) return
+            const el = this.#container
+            if (Math.abs(el[this.scrollProp] - this.#allowedScroll) > 1.5)
+                el[this.scrollProp] = this.#allowedScroll
+        })
         this.#container.addEventListener('scroll', () => this.dispatchEvent(new Event('scroll')))
         this.#container.addEventListener('scroll', debounce(() => {
             if (this.scrolled) {
@@ -568,10 +581,14 @@ export class Paginator extends HTMLElement {
         this.addEventListener('touchstart', this.#onTouchStart.bind(this), opts)
         this.addEventListener('touchmove', this.#onTouchMove.bind(this), opts)
         this.addEventListener('touchend', this.#onTouchEnd.bind(this))
+        // [Lumen] the browser cancels the touch when a long press starts a text
+        // selection; settle on a page instead of staying mid-swipe
+        this.addEventListener('touchcancel', this.#onTouchEnd.bind(this))
         this.addEventListener('load', ({ detail: { doc } }) => {
             doc.addEventListener('touchstart', this.#onTouchStart.bind(this), opts)
             doc.addEventListener('touchmove', this.#onTouchMove.bind(this), opts)
             doc.addEventListener('touchend', this.#onTouchEnd.bind(this))
+            doc.addEventListener('touchcancel', this.#onTouchEnd.bind(this))
         })
 
         this.addEventListener('relocate', ({ detail }) => {
@@ -583,8 +600,9 @@ export class Paginator extends HTMLElement {
                 else setSelectionTo(this.#anchor, -1)
             }
         })
-        const checkPointerSelection = debounce((range, sel) => {
-            if (!sel.rangeCount) return
+        const checkPointerSelection = debounce((range, sel, stillSelecting) => {
+            // [Lumen] only turn pages while the pointer is still dragging
+            if (!stillSelecting() || !sel.rangeCount) return
             const selRange = sel.getRangeAt(0)
             const backward = selectionIsBackward(sel)
             if (backward && selRange.compareBoundaryPoints(Range.START_TO_START, range) < 0)
@@ -594,8 +612,11 @@ export class Paginator extends HTMLElement {
         }, 700)
         this.addEventListener('load', ({ detail: { doc } }) => {
             let isPointerSelecting = false
-            doc.addEventListener('pointerdown', () => isPointerSelecting = true)
+            // [Lumen] touch selections are adjusted with native handles, which
+            // never send pointerup (only pointercancel); don't page-turn for them
+            doc.addEventListener('pointerdown', e => isPointerSelecting = e.pointerType !== 'touch')
             doc.addEventListener('pointerup', () => isPointerSelecting = false)
+            doc.addEventListener('pointercancel', () => isPointerSelecting = false)
             let isKeyboardSelecting = false
             doc.addEventListener('keydown', () => isKeyboardSelecting = true)
             doc.addEventListener('keyup', () => isKeyboardSelecting = false)
@@ -606,7 +627,7 @@ export class Paginator extends HTMLElement {
                 const sel = doc.getSelection()
                 if (!sel.rangeCount) return
                 if (isPointerSelecting && sel.type === 'Range')
-                    checkPointerSelection(range, sel)
+                    checkPointerSelection(range, sel, () => isPointerSelecting)
                 else if (isKeyboardSelecting) {
                     const selRange = sel.getRangeAt(0).cloneRange()
                     const backward = selectionIsBackward(sel)
@@ -800,6 +821,7 @@ export class Paginator extends HTMLElement {
         const max = rtl ? offset + a : offset + b
         element[scrollProp] = Math.max(min, Math.min(max,
             element[scrollProp] + delta))
+        this.#allowedScroll = element[scrollProp]
     }
     snap(vx, vy) {
         const velocity = this.#vertical ? vy : vx
@@ -822,23 +844,39 @@ export class Paginator extends HTMLElement {
     }
     #onTouchStart(e) {
         const touch = e.changedTouches[0]
+        const sel = this.#view?.document?.getSelection?.()
         this.#touchState = {
             x: touch?.screenX, y: touch?.screenY,
-            t: e.timeStamp,
+            x0: touch?.screenX, y0: touch?.screenY,
+            t: e.timeStamp, t0: e.timeStamp,
             vx: 0, xy: 0,
+            // [Lumen] a touch that starts while text is selected adjusts or
+            // dismisses the selection; it must not drag the page
+            selecting: !!sel && !sel.isCollapsed,
+            swiping: false,
         }
     }
     #onTouchMove(e) {
         const state = this.#touchState
-        if (state.pinched) return
+        if (!state || state.pinched) return
         state.pinched = globalThis.visualViewport.scale > 1
         if (this.scrolled || state.pinched) return
         if (e.touches.length > 1) {
             if (this.#touchScrolled) e.preventDefault()
             return
         }
-        e.preventDefault()
         const touch = e.changedTouches[0]
+        if (!state.swiping) {
+            // [Lumen] ignore jitter, long presses (text selection) and touches
+            // that began on a selection; only a deliberate drag turns pages
+            const sel = this.#view?.document?.getSelection?.()
+            if (state.selecting || (sel && !sel.isCollapsed)) return
+            const moved = Math.hypot(touch.screenX - state.x0, touch.screenY - state.y0)
+            if (moved < 10) return
+            if (e.timeStamp - state.t0 > 400 && moved < 30) return
+            state.swiping = true
+        }
+        e.preventDefault()
         const x = touch.screenX, y = touch.screenY
         const dx = state.x - x, dy = state.y - y
         const dt = e.timeStamp - state.t
@@ -851,8 +889,9 @@ export class Paginator extends HTMLElement {
         this.scrollBy(dx, dy)
     }
     #onTouchEnd() {
+        const wasSwiping = this.#touchScrolled
         this.#touchScrolled = false
-        if (this.scrolled) return
+        if (this.scrolled || !wasSwiping) return
 
         // XXX: Firefox seems to report scale as 1... sometimes...?
         // at this point I'm basically throwing `requestAnimationFrame` at
@@ -892,6 +931,7 @@ export class Paginator extends HTMLElement {
         const element = this.#container
         const { scrollProp, size } = this
         if (element[scrollProp] === offset) {
+            this.#allowedScroll = offset
             this.#scrollBounds = [offset, this.atStart ? 0 : size, this.atEnd ? 0 : size]
             this.#afterScroll(reason)
             return
@@ -900,13 +940,13 @@ export class Paginator extends HTMLElement {
         if (this.scrolled && this.#vertical) offset = -offset
         if ((reason === 'snap' || smooth) && this.hasAttribute('animated')) return animate(
             element[scrollProp], offset, 300, easeOutQuad,
-            x => element[scrollProp] = x,
+            x => element[scrollProp] = this.#allowedScroll = x,
         ).then(() => {
             this.#scrollBounds = [offset, this.atStart ? 0 : size, this.atEnd ? 0 : size]
             this.#afterScroll(reason)
         })
         else {
-            element[scrollProp] = offset
+            element[scrollProp] = this.#allowedScroll = offset
             this.#scrollBounds = [offset, this.atStart ? 0 : size, this.atEnd ? 0 : size]
             this.#afterScroll(reason)
         }

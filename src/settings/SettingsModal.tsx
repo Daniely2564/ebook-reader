@@ -1,7 +1,7 @@
 import { ArrowDown, ArrowUp, BookA, Database, Download, Headphones, Info, Monitor, Moon, Plus, Sun, Trash, Upload } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { deleteUserDict, exportBackup, getUserDicts, importBackup, putUserDict, type UserDictRecord } from '../lib/db'
-import { getWordNetMeta, type WordNetMeta } from '../lib/dictionary/wordnet'
+import { getBuiltinSources } from '../lib/dictionary'
 import { forgetStarDict, importStarDict } from '../lib/dictionary/stardict'
 import { formatSize } from '../lib/format'
 import { exportFile, isNative } from '../lib/platform'
@@ -68,13 +68,13 @@ const General = () => {
 
 const Dictionaries = () => {
   const s = useSettings()
-  const [meta, setMeta] = useState<WordNetMeta | null>(null)
+  const [builtin, setBuiltin] = useState<Awaited<ReturnType<typeof getBuiltinSources>> | null>(null)
   const [dicts, setDicts] = useState<UserDictRecord[] | null>(null)
   const [busy, setBusy] = useState(false)
   const input = useRef<HTMLInputElement>(null)
   const load = () => getUserDicts().then(setDicts)
   useEffect(() => {
-    getWordNetMeta().then(setMeta)
+    getBuiltinSources().then(setBuiltin)
     load()
   }, [])
 
@@ -111,16 +111,33 @@ const Dictionaries = () => {
 
   return (
     <div className="settings-section">
-      <h3>Built-in dictionary</h3>
-      <div className="dict-card card">
-        <BookA size={22} />
-        <div>
-          <strong>English (WordNet 3.1 + Wiktionary)</strong>
-          <div className="muted small">
-            {meta ? `${meta.words.toLocaleString()} words · ${meta.withPronunciation.toLocaleString()} pronunciations · works offline` : 'Loading…'}
-          </div>
-        </div>
-      </div>
+      <h3>Built-in dictionaries</h3>
+      <p className="muted small">English dictionaries that work offline. The dictionary opens on the tab you used last.</p>
+      {builtin === null ? <Spinner /> : (
+        <ul className="dict-list">
+          {builtin.map(d => {
+            const enabled = !s.dictDisabled.includes(d.id)
+            const otherLang = d.id.startsWith('bi-') && d.id !== `bi-${s.translateTo.split('-')[0]}`
+            return (
+              <li key={d.id} className="card dict-builtin">
+                <BookA size={18} />
+                <div className="dict-list-main">
+                  <strong>{d.name}</strong>
+                  <span className="muted small" title={d.description}>
+                    {d.words.toLocaleString()} words · {otherLang ? `shown when My language is ${langName.of(d.id.slice(3)) ?? d.id.slice(3)}` : d.description}
+                  </span>
+                </div>
+                <label className="mini-switch" title={enabled ? 'Enabled' : 'Disabled'}>
+                  <input type="checkbox" role="switch" aria-label={d.name} checked={enabled} onChange={e => s.set({
+                    dictDisabled: e.target.checked ? s.dictDisabled.filter(x => x !== d.id) : [...s.dictDisabled, d.id],
+                  })} />
+                  <span className="switch" />
+                </label>
+              </li>
+            )
+          })}
+        </ul>
+      )}
 
       <h3>Your dictionaries</h3>
       <p className="muted small">Import StarDict dictionaries (<code>.ifo</code> + <code>.idx</code> + <code>.dict</code>/<code>.dict.dz</code>, or a <code>.zip</code>/<code>.tar.gz</code> archive) to look up words in other languages or use a different English dictionary. They work offline.</p>
@@ -152,9 +169,12 @@ const Dictionaries = () => {
       <Button onClick={() => input.current?.click()} disabled={busy}>{busy ? <Spinner size={16} /> : <Plus size={16} />}Import StarDict dictionary</Button>
 
       <h3>Online</h3>
-      <Switch label="Use online sources when available" hint="Wiktionary (all languages), Wikipedia and pronunciation audio. Nothing is sent unless you open a lookup." checked={s.onlineLookup} onChange={v => s.set({ onlineLookup: v })} />
+      <Switch label="Use online sources when available" hint="Wiktionary.org (all languages), Wikipedia and recorded pronunciations. Nothing is sent unless you open a lookup." checked={s.onlineLookup} onChange={v => s.set({ onlineLookup: v })} />
+
+      <h3>My language</h3>
+      <p className="muted small">Shows translations of English words in the dictionary, and is the target of the Translate button.</p>
       <div className="typo-row">
-        <span>Translate to</span>
+        <span>My language</span>
         <select className="select" value={s.translateTo} onChange={e => s.set({ translateTo: e.target.value })}>
           {LANGS.map(l => <option key={l} value={l}>{langName.of(l) ?? l}</option>)}
         </select>
@@ -269,9 +289,10 @@ const About = () => (
     <ul className="credits">
       <li><b>foliate-js</b> by John Factotum, MIT — EPUB, MOBI, FB2 and CBZ rendering</li>
       <li><b>PDF.js</b> by Mozilla, Apache-2.0 — PDF rendering</li>
-      <li><b>WordNet 3.1</b>, Princeton University — dictionary definitions (WordNet License)</li>
-      <li><b>Wiktionary</b> contributors, via kaikki.org — definitions of function words (CC BY-SA 4.0)</li>
+      <li><b>Wiktionary</b> contributors (English and Korean editions), via kaikki.org/Wiktextract — definitions, examples, pronunciations, origins and translations (CC BY-SA 4.0)</li>
+      <li><b>WordNet 3.1</b>, Princeton University — definitions and synonyms (WordNet License)</li>
       <li><b>CMU Pronouncing Dictionary</b>, Carnegie Mellon University — pronunciations (BSD)</li>
+      <li><b>Wikimedia Commons</b> contributors — recorded pronunciations, played online (CC BY-SA)</li>
       <li><b>Literata, Source Serif 4, Merriweather, Inter, Atkinson Hyperlegible, OpenDyslexic</b> — SIL Open Font License</li>
       <li><b>React, Electron, Capacitor, Lucide</b> — MIT / ISC</li>
     </ul>

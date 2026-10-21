@@ -6,6 +6,7 @@ import { FootnoteHandler } from '../vendor/foliate-js/footnotes.js'
 import type { Annotation } from '../lib/db'
 import type { Settings } from '../lib/settings'
 import { fontById, fontFaceCss, HIGHLIGHT_COLORS, themeById, type ReaderTheme } from '../lib/themes'
+import { isElision } from '../lib/dictionary/wordnet'
 import { contextSentence, rectOf, splitSentences } from './text'
 import type { EngineCallbacks, ReaderEngine, Relocation, SearchHit, SpeechChunk, TocItem } from './types'
 
@@ -106,6 +107,9 @@ export class EpubEngine implements ReaderEngine {
   #wheelActive = false
   #wheelTimer: ReturnType<typeof setTimeout> | null = null
   #selectionTimer: ReturnType<typeof setTimeout> | null = null
+  #mouseDown = false
+  /** last selection reported to the UI, so unchanged selections aren't re-reported */
+  #lastSelection: string | null = null
   #speechFromStart = false
   #footnotes = new FootnoteHandler()
   #footnoteEl: HTMLElement | null = null
@@ -242,10 +246,12 @@ export class EpubEngine implements ReaderEngine {
     doc.addEventListener('keydown', e => this.#cb.onKey(e))
     doc.addEventListener('pointerdown', e => {
       this.#pointerType = e.pointerType
+      if (e.pointerType !== 'touch') this.#mouseDown = true
       activity()
     })
     // MouseEvent.detail carries the click count (PointerEvent.detail is always 0)
     doc.addEventListener('mouseup', e => {
+      this.#mouseDown = false
       if (this.#pointerType !== 'touch') setTimeout(() => this.#checkSelection(doc, e.detail >= 2), 10)
     })
     doc.addEventListener('dblclick', () => {
@@ -256,11 +262,16 @@ export class EpubEngine implements ReaderEngine {
       if (this.#selectionTimer) clearTimeout(this.#selectionTimer)
       const sel = doc.getSelection()
       if (!sel || sel.isCollapsed) {
+        this.#lastSelection = null
         this.#cb.onSelection(null)
         return
       }
+      // touch: wait for the long press / handle drag to settle. Mouse drags are
+      // reported on mouseup; keyboard and shift-click extensions settle here.
       if (this.#pointerType === 'touch')
-        this.#selectionTimer = setTimeout(() => this.#checkSelection(doc, true), 450)
+        this.#selectionTimer = setTimeout(() => this.#checkSelection(doc, true, true), 450)
+      else if (!this.#mouseDown)
+        this.#selectionTimer = setTimeout(() => this.#checkSelection(doc, false, true), 300)
     })
     doc.addEventListener('click', e => this.#onClick(doc, e))
     doc.addEventListener('wheel', this.#onWheel, { passive: false })
@@ -302,17 +313,25 @@ export class EpubEngine implements ReaderEngine {
     this.#wheelTimer = setTimeout(() => (this.#wheelActive = false), 160)
   }
 
-  #checkSelection(doc: Document, fromWordGesture: boolean) {
+  #checkSelection(doc: Document, fromWordGesture: boolean, onlyIfChanged = false) {
     const sel = doc.getSelection()
     if (!sel || sel.isCollapsed || !sel.rangeCount) return
     const range = sel.getRangeAt(0)
-    const text = sel.toString().replace(/\s+/g, ' ').trim()
+    let text = sel.toString().replace(/\s+/g, ' ').trim()
     if (!text) return
+    // a double-click on "’Tis" selects "Tis": look up the elided word
+    if (fromWordGesture && range.startContainer.nodeType === Node.TEXT_NODE) {
+      const before = range.startContainer.nodeValue!.slice(Math.max(0, range.startOffset - 2), range.startOffset)
+      if (/(?:^|[^\p{L}])[‘’']$/u.test(before) && isElision(`'${text}`)) text = `'${text}`
+    }
     const index = this.#docIndex.get(doc)
     let locator: string | null = null
     try {
       if (index != null) locator = this.#view.getCFI(index, range)
     } catch { /* not addressable */ }
+    const key = locator ?? text
+    if (onlyIfChanged && key === this.#lastSelection) return
+    this.#lastSelection = key
     const isSingleWord = !/\s/.test(text) && text.length <= 48
     this.#cb.onSelection({
       text,
@@ -326,6 +345,7 @@ export class EpubEngine implements ReaderEngine {
   }
 
   clearSelection() {
+    this.#lastSelection = null
     this.#view?.deselect()
   }
 

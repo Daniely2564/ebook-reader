@@ -1,40 +1,48 @@
 #!/usr/bin/env node
-// Compiles the offline English dictionary shipped with Lumen Reader.
+// Compiles the offline dictionaries shipped with Lumen Reader.
 //
 // Sources (all redistributable, licenses copied next to the output):
-//   - WordNet 3.1 (`wordnet-db`)           definitions, examples, synonyms…
+//   - Wiktionary (CC BY-SA 4.0), distilled into data/wiktionary/ by
+//     distill-wiktionary.mjs: English definitions, labels, examples, IPA,
+//     etymology, irregular forms, translation tables, and English words
+//     defined in other languages (bilingual packs, e.g. English–Korean)
+//   - WordNet 3.1 (`wordnet-db`)           concise definitions, synonyms…
 //   - WordNet 3.0 exception lists          irregular forms (went → go)
 //     (`wndb-with-exceptions`)
-//   - CMU Pronouncing Dictionary           pronunciations, converted to IPA
+//   - CMU Pronouncing Dictionary           WordNet pronunciations, as IPA
 //     (`cmu-pronouncing-dictionary`)
-//   - Wiktionary (CC BY-SA 4.0)            articles, pronouns, prepositions,
-//     scripts/data/wiktionary-closed-class  conjunctions… that WordNet lacks
-//     (see distill-wiktionary.mjs)
 //
 // Output (public/dict/):
-//   meta.json          build info
-//   words.txt          sorted headword list (autocomplete / "did you mean")
-//   exc.json           irregular inflections per part of speech
-//   s/<xx>.bin         gzip'd JSON shards keyed by the first two letters
+//   meta.json            build info and available sources
+//   words.bin            gzip'd sorted headword list (autocomplete, "did you mean")
+//   exc.json             irregular inflections per part of speech (WordNet)
+//   wk/, wn/, bi/<lang>/ gzip'd JSON shards: <key>.bin, keyed by the first two
+//                        letters (three for large prefixes, listed in index.json)
+//   tr/<lang>.bin        Wiktionary translation tables for one language
 //
-// Shard entry format (kept terse — this ships inside the app):
-//   { "<word>": { "i": "<ipa>", "m": [[pos, [[definition, examples[], synonyms[], antonyms[], typeOf[]], …]], …] } }
+// WordNet shard entry: { "<word>": { "i": "<ipa>", "m": [[pos, [[definition, examples[], synonyms[], antonyms[], typeOf[]], …]], …] } }
+// Wiktionary entries keep the distilled format documented in distill-wiktionary.mjs.
 
 import fs from 'node:fs'
 import path from 'node:path'
 import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
-import { gzipSync } from 'node:zlib'
+import { gunzipSync, gzipSync } from 'node:zlib'
 
-const VERSION = 4
+const VERSION = 5
 const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
 const out = path.join(root, 'public', 'dict')
 const require = createRequire(import.meta.url)
 
 if (process.argv.includes('--if-missing')) {
   try {
-    const meta = JSON.parse(fs.readFileSync(path.join(out, 'meta.json'), 'utf8'))
-    if (meta.version === VERSION) process.exit(0)
+    const metaFile = path.join(out, 'meta.json')
+    const meta = JSON.parse(fs.readFileSync(metaFile, 'utf8'))
+    // rebuild when the distilled Wiktionary data is newer than the last build
+    const built = fs.statSync(metaFile).mtimeMs
+    const data = path.join(root, 'data', 'wiktionary')
+    const stale = fs.existsSync(data) && fs.readdirSync(data).some(f => fs.statSync(path.join(data, f)).mtimeMs > built)
+    if (meta.version === VERSION && !stale) process.exit(0)
   } catch { /* build it */ }
 }
 
@@ -183,21 +191,9 @@ for (const [pos, file] of Object.entries(POS_FILES)) {
   }
 }
 
-// closed-class words (the, whom, amid, 'tis…) from Wiktionary, listed first
-const closed = JSON.parse(fs.readFileSync(path.join(root, 'scripts', 'data', 'wiktionary-closed-class.json'), 'utf8'))
-const CLOSED_POS = ['article', 'pron', 'prep', 'conj', 'det', 'particle', 'contraction', 'intj']
-for (const [word, data] of Object.entries(closed)) {
-  let entry = entries.get(word)
-  if (!entry) entries.set(word, entry = { m: [] })
-  const extra = CLOSED_POS.filter(p => data[p]).map(p => [p, data[p].map(([def, ex]) => [def, ex ? [ex] : []])])
-  entry.m.unshift(...extra)
-  if (data.i) entry.wikiIpa = data.i
-}
-
 let withIpa = 0
 for (const [word, entry] of entries) {
-  const ipa = ipaFor(word) ?? entry.wikiIpa
-  delete entry.wikiIpa
+  const ipa = ipaFor(word)
   if (ipa) {
     entry.i = ipa
     withIpa++
@@ -205,34 +201,100 @@ for (const [word, entry] of entries) {
 }
 
 // ---------------------------------------------------------------- write
-export const shardKey = word => {
+const shardKey = (word, len) => {
   const s = word.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '')
   let k = ''
   for (const ch of s) {
-    if (k.length === 2) break
+    if (k.length === len) break
     k += /[a-z0-9]/.test(ch) ? ch : '_'
   }
-  return k.padEnd(2, '_')
+  return k.padEnd(len, '_')
+}
+
+const SPLIT_ABOVE = 400_000 // bytes of JSON per two-letter shard before it is split by the third letter
+let totalBytes = 0
+/** Writes a {word: entry} map as shards; large two-letter prefixes are split by a third letter. */
+const writeShards = (dir, map) => {
+  fs.mkdirSync(path.join(out, dir), { recursive: true })
+  const byTwo = new Map()
+  for (const [word, entry] of map) {
+    const k = shardKey(word, 2)
+    if (!byTwo.has(k)) byTwo.set(k, new Map())
+    byTwo.get(k).set(word, entry)
+  }
+  const split = []
+  let bytes = 0
+  let files = 0
+  const write = (key, m) => {
+    const gz = gzipSync(Buffer.from(JSON.stringify(Object.fromEntries(m))), { level: 9 })
+    fs.writeFileSync(path.join(out, dir, `${key}.bin`), gz)
+    bytes += gz.length
+    files++
+  }
+  for (const [k, m] of byTwo) {
+    const size = [...m].reduce((n, [w, e]) => n + w.length + JSON.stringify(e).length, 0)
+    if (size <= SPLIT_ABOVE) {
+      write(k, m)
+      continue
+    }
+    split.push(k)
+    const byThree = new Map()
+    for (const [w, e] of m) {
+      const k3 = shardKey(w, 3)
+      if (!byThree.has(k3)) byThree.set(k3, new Map())
+      byThree.get(k3).set(w, e)
+    }
+    for (const [k3, m3] of byThree) write(k3, m3)
+  }
+  fs.writeFileSync(path.join(out, dir, 'index.json'), JSON.stringify({ split: split.sort() }))
+  totalBytes += bytes
+  return { words: map.size, files, bytes }
+}
+
+const readLines = file => {
+  const map = new Map()
+  const text = gunzipSync(fs.readFileSync(file)).toString('utf8')
+  for (const line of text.split('\n')) {
+    if (!line) continue
+    const [key, value] = JSON.parse(line)
+    map.set(key, value)
+  }
+  return map
 }
 
 fs.rmSync(out, { recursive: true, force: true })
-fs.mkdirSync(path.join(out, 's'), { recursive: true })
+fs.mkdirSync(out, { recursive: true })
 
-const shards = new Map()
-for (const [word, entry] of entries) {
-  const key = shardKey(word)
-  if (!shards.has(key)) shards.set(key, {})
-  shards.get(key)[word] = { ...(entry.i ? { i: entry.i } : {}), m: entry.m }
-}
-let bytes = 0
-for (const [key, data] of shards) {
-  const gz = gzipSync(Buffer.from(JSON.stringify(data)), { level: 9 })
-  bytes += gz.length
-  fs.writeFileSync(path.join(out, 's', `${key}.bin`), gz)
+const sources = {}
+sources.wordnet = writeShards('wn', new Map([...entries].map(([w, e]) => [w, { ...(e.i ? { i: e.i } : {}), m: e.m }])))
+
+const wkDir = path.join(root, 'data', 'wiktionary')
+const allWords = new Set(entries.keys())
+if (fs.existsSync(path.join(wkDir, 'en.jsonl.gz'))) {
+  const wk = readLines(path.join(wkDir, 'en.jsonl.gz'))
+  for (const [w, e] of wk) if (!e.r) allWords.add(w)
+  sources.wiktionary = { ...writeShards('wk', wk), redirects: [...wk.values()].filter(e => e.r).length }
+  sources.bilingual = {}
+  sources.translations = {}
+  for (const f of fs.readdirSync(wkDir).sort()) {
+    const bi = f.match(/^bi-([a-z]+)\.jsonl\.gz$/)
+    if (bi) sources.bilingual[bi[1]] = writeShards(`bi/${bi[1]}`, readLines(path.join(wkDir, f)))
+    const tr = f.match(/^tr-([a-z]+)\.jsonl\.gz$/)
+    if (tr) {
+      fs.mkdirSync(path.join(out, 'tr'), { recursive: true })
+      const m = readLines(path.join(wkDir, f))
+      const gz = gzipSync(Buffer.from(JSON.stringify(Object.fromEntries(m))), { level: 9 })
+      fs.writeFileSync(path.join(out, 'tr', `${tr[1]}.bin`), gz)
+      totalBytes += gz.length
+      sources.translations[tr[1]] = { words: m.size, bytes: gz.length }
+    }
+  }
+} else {
+  console.warn('data/wiktionary/en.jsonl.gz not found — building WordNet only')
 }
 
-const words = [...entries.keys()].sort()
-fs.writeFileSync(path.join(out, 'words.txt'), words.join('\n'))
+const words = [...allWords].sort()
+fs.writeFileSync(path.join(out, 'words.bin'), gzipSync(Buffer.from(words.join('\n')), { level: 9 }))
 
 const exc = {}
 for (const [pos, file] of Object.entries(POS_FILES)) {
@@ -245,30 +307,30 @@ for (const [pos, file] of Object.entries(POS_FILES)) {
 fs.writeFileSync(path.join(out, 'exc.json'), JSON.stringify(exc))
 
 fs.writeFileSync(path.join(out, 'LICENSES.txt'), [
-  'Lumen Reader offline dictionary — data sources and licenses',
+  'Lumen Reader offline dictionaries — data sources and licenses',
+  '',
+  '== Wiktionary ==',
+  'Definitions, examples, pronunciations, etymologies and translations are adapted from',
+  'Wiktionary (https://en.wiktionary.org and https://ko.wiktionary.org), via the kaikki.org',
+  'extracts (https://kaikki.org), and are available under the Creative Commons',
+  'Attribution-ShareAlike 4.0 License (https://creativecommons.org/licenses/by-sa/4.0/).',
+  'Pronunciation recordings are played from Wikimedia Commons under their own licenses.',
   '',
   '== WordNet 3.1 ==',
   fs.readFileSync(path.join(wnDir, '..', 'LICENSE'), 'utf8'),
   '',
   '== CMU Pronouncing Dictionary ==',
   fs.readFileSync(path.join(cmuDir, 'license'), 'utf8'),
-  '',
-  '== Wiktionary ==',
-  'Definitions of articles, pronouns, prepositions, conjunctions, determiners, particles,',
-  'interjections and contractions are adapted from Wiktionary (https://en.wiktionary.org),',
-  'via kaikki.org extracts, and are available under the Creative Commons',
-  'Attribution-ShareAlike 4.0 License (https://creativecommons.org/licenses/by-sa/4.0/).',
 ].join('\n'))
 
 const meta = {
   version: VERSION,
-  name: 'WordNet 3.1 + Wiktionary + CMU Pronouncing Dictionary',
-  words: entries.size,
+  words: words.length,
   withPronunciation: withIpa,
-  shards: shards.size,
-  bytes,
+  sources,
+  bytes: totalBytes,
   built: new Date().toISOString(),
 }
 fs.writeFileSync(path.join(out, 'meta.json'), JSON.stringify(meta, null, 2))
-console.log(`Dictionary: ${meta.words} words (${withIpa} with IPA) in ${meta.shards} shards, ` +
-  `${(bytes / 1048576).toFixed(1)} MB compressed — ${((Date.now() - t0) / 1000).toFixed(1)}s`)
+console.log(`Dictionary: ${words.length} headwords — Wiktionary ${sources.wiktionary?.words ?? 0}, WordNet ${sources.wordnet.words}, ` +
+  `bilingual ${Object.keys(sources.bilingual ?? {}).join(', ') || 'none'} — ${(totalBytes / 1048576).toFixed(1)} MB compressed — ${((Date.now() - t0) / 1000).toFixed(1)}s`)

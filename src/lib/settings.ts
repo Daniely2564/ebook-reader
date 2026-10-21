@@ -41,7 +41,12 @@ export interface Settings {
   // dictionary
   instantLookup: boolean
   onlineLookup: boolean
+  /** the reader's own language: bilingual dictionary, translations, Translate button */
   translateTo: string
+  /** last dictionary tab picked, per book language ("en", "fr", …) */
+  dictTabs: Record<string, string>
+  /** built-in dictionaries turned off in Settings */
+  dictDisabled: string[]
 
   // read aloud
   ttsVoice: string
@@ -87,6 +92,8 @@ export const DEFAULT_SETTINGS: Settings = {
   instantLookup: true,
   onlineLookup: true,
   translateTo: defaultLang === 'en' ? 'es' : defaultLang,
+  dictTabs: {},
+  dictDisabled: [],
 
   ttsVoice: '',
   ttsRate: 1,

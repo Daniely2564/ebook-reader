@@ -5,6 +5,7 @@
 .dict-word { flex: 1; min-width: 0; display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
 .dict-word h2 { font: 650 26px/1.15 var(--font-serif); letter-spacing: -.01em; overflow-wrap: anywhere; }
 .dict-ipa { color: var(--muted); font-size: 15px; font-family: 'Inter Variable', 'Segoe UI', 'Noto Sans', sans-serif; }
+.dict-ipa-alt { font-size: 13.5px; color: var(--faint); }
 .dict-head-actions { display: flex; }
 
 .dict-tabs { display: flex; gap: 6px; padding: 4px 18px 8px; overflow-x: auto; scrollbar-width: none; flex: none; }
@@ -20,6 +21,7 @@
 .dict-entry + .dict-entry { margin-top: 14px; padding-top: 14px; border-top: 1px dashed var(--border); }
 .dict-form { font-size: 13.5px; color: var(--muted); margin-bottom: 6px; }
 .dict-form span { font-style: italic; }
+.dict-relation { display: block; margin-top: 1px; font-size: 12.5px; color: var(--faint); }
 .dict-subword { font: 600 17px var(--font-serif); margin-bottom: 4px; }
 .dict-pos {
   margin: 12px 0 4px; font-size: 11.5px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; color: var(--accent);
@@ -29,6 +31,17 @@
 .dict-senses li { padding-inline-start: 2px; font-size: 15px; line-height: 1.5; }
 .dict-senses li::marker { color: var(--faint); font-size: 13px; font-variant-numeric: tabular-nums; }
 .dict-def { color: var(--text); }
+.dict-label {
+  margin-inline-end: 6px; padding: 0 6px; border-radius: 5px; background: color-mix(in srgb, var(--muted) 13%, transparent);
+  font-size: 11.5px; font-style: italic; color: var(--muted); white-space: nowrap;
+}
+.dict-display, .dict-forms { margin-inline-start: 8px; font-weight: 600; letter-spacing: 0; text-transform: none; color: var(--muted); }
+.dict-display { font: 600 13px var(--font-serif); color: var(--text); }
+.dict-forms::before { content: '· '; }
+.dict-trans { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; margin: 2px 0 8px; font-size: 15px; }
+.dict-trans-item + .dict-trans-item::before { content: '·'; margin-inline-end: 10px; color: var(--faint); }
+.dict-etym { margin-top: 4px; font-size: 13.5px; line-height: 1.5; color: var(--muted); }
+.dict-etym p { margin: 0 0 4px; }
 .dict-ex {
   margin-top: 3px; color: var(--muted); font: italic 14.5px/1.45 var(--font-serif);
 }
@@ -108,3 +121,4 @@
   .dict-info { flex-wrap: wrap; }
   .dict-page-result .dict-word h2 { font-size: 30px; }
 }
+.nowrap { white-space: nowrap; }

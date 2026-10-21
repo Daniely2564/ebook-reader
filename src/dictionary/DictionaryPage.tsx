@@ -1,6 +1,6 @@
 import { BookA, Clock, Search, Settings2, X } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
-import { clearLookupHistory, getLookupHistory, getWordNetMeta, suggestWords } from '../lib/dictionary'
+import { clearLookupHistory, getLookupHistory, getDictMeta, suggestWords } from '../lib/dictionary'
 import { getUserDicts } from '../lib/db'
 import { useApp } from '../lib/store'
 import { Button } from '../components/ui'
@@ -24,7 +24,7 @@ export const DictionaryPage = ({ initial }: { initial?: string }) => {
   }, [initial])
 
   useEffect(() => {
-    Promise.all([getWordNetMeta(), getUserDicts()]).then(([m, d]) => setInfo({ words: m?.words ?? 0, user: d.length }))
+    Promise.all([getDictMeta(), getUserDicts()]).then(([m, d]) => setInfo({ words: m?.words ?? 0, user: d.length }))
     if (!initial) inputRef.current?.focus()
   }, [initial])
 

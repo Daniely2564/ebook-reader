@@ -98,7 +98,8 @@ try {
   await page.evaluate(() => document.querySelector('[aria-label="Back to library"]').click())
   await page.waitForSelector('.continue')
   await page.locator('.book').click()
-  await page.waitForFunction(() => /Page \d+/.test(document.querySelector('.info-left')?.textContent ?? ''), null, { timeout: 20_000 })
+  // the first relocation after opening can be reported before the layout settles
+  await page.waitForFunction(s => document.querySelector('.info-left')?.textContent?.includes(s), saved, { timeout: 20_000 }).catch(() => {})
   assert.equal(await label(), saved)
   step('restores the reading position')
 

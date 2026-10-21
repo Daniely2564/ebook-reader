@@ -1,0 +1,99 @@
+{
+  "lines": 1492836,
+  "headwords": 166103,
+  "redirects": 93146,
+  "enBytes": 20139968,
+  "translations": {
+    "ko": {
+      "words": 1888,
+      "bytes": 55932
+    },
+    "ja": {
+      "words": 2538,
+      "bytes": 106281
+    },
+    "cmn": {
+      "words": 2536,
+      "bytes": 118974
+    },
+    "es": {
+      "words": 3951,
+      "bytes": 118305
+    },
+    "fr": {
+      "words": 3901,
+      "bytes": 106018
+    },
+    "de": {
+      "words": 3944,
+      "bytes": 123459
+    },
+    "it": {
+      "words": 3184,
+      "bytes": 88358
+    },
+    "pt": {
+      "words": 3515,
+      "bytes": 97988
+    },
+    "ru": {
+      "words": 3777,
+      "bytes": 184677
+    },
+    "vi": {
+      "words": 1511,
+      "bytes": 43559
+    },
+    "ar": {
+      "words": 1869,
+      "bytes": 77704
+    },
+    "hi": {
+      "words": 1491,
+      "bytes": 62433
+    },
+    "id": {
+      "words": 1366,
+      "bytes": 35463
+    },
+    "th": {
+      "words": 1277,
+      "bytes": 49032
+    },
+    "tr": {
+      "words": 2171,
+      "bytes": 60806
+    },
+    "nl": {
+      "words": 2952,
+      "bytes": 84209
+    },
+    "pl": {
+      "words": 3617,
+      "bytes": 104701
+    },
+    "uk": {
+      "words": 2039,
+      "bytes": 89786
+    },
+    "fa": {
+      "words": 1163,
+      "bytes": 44802
+    },
+    "he": {
+      "words": 1588,
+      "bytes": 57781
+    },
+    "sv": {
+      "words": 2964,
+      "bytes": 80389
+    }
+  },
+  "bilingual": {
+    "ko": {
+      "words": 15247,
+      "bytes": 754838
+    }
+  },
+  "seconds": 108
+}

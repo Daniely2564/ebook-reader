@@ -13,7 +13,7 @@ const CSP = [
   "style-src 'self' 'unsafe-inline' blob:",
   "img-src 'self' blob: data: https:",
   "font-src 'self' blob: data:",
-  "media-src 'self' blob: data:",
+  "media-src 'self' blob: data: https:",
   "frame-src 'self' blob:",
   "worker-src 'self' blob:",
   "connect-src 'self' blob: data: https:",
