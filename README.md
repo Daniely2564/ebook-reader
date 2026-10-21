@@ -24,10 +24,10 @@ A calm, fast ebook reader for **desktop (Electron)** and **Android (Capacitor)**
 - Table of contents, full-text search with highlighted results, footnote popups, a "Back to page X" chip after jumps, and reading position restore.
 
 **Dictionary and language**
-- Built-in offline dictionaries (about 32 MB):
-  - **Wiktionary**: 165,000 English headwords plus 95,000 irregular and archaic forms, with usage labels (*transitive*, *archaic*, *botany*…), examples, synonyms, irregular forms, US/UK IPA, word origins, and recorded pronunciations from Wikimedia Commons (played when online).
+- Built-in offline dictionaries (about 43 MB):
+  - **Wiktionary**: 177,000 English headwords plus 230,000 inflected, archaic and alternative forms, with usage labels (*transitive*, *archaic*, *botany*…), examples, synonyms, irregular forms, US/UK IPA, word origins, and recorded pronunciations from Wikimedia Commons (played when online).
   - **WordNet 3.1**: concise definitions with synonyms and opposites, plus CMU Pronouncing Dictionary IPA.
-  - **English–Korean** (from the Korean Wiktionary, 15,000 words), and translations of common words into 21 languages, shown for the language picked under *My language*.
+  - **English–Korean** (from the Korean Wiktionary, 15,000 words), and translations of 40,000 common words into 21 languages, shown for the language picked under *My language*.
 - Understands inflections and old spellings (`running → run`, `geese → goose`, `went → go`, `hath → have`, `colour → color`, `'tis`, `o'er`) and offers "did you mean" suggestions.
 - The dictionary card opens on the tab you used last (per book language), and each built-in dictionary can be turned off in Settings.
 - Import **StarDict** dictionaries (`.ifo/.idx/.dict(.dz)`, or `.zip`/`.tar.gz`) for any language. `.dict.dz` files are read with random access, so big dictionaries stay fast.
@@ -102,6 +102,7 @@ scripts/
   distill-wiktionary.mjs   distills kaikki.org Wiktionary dumps into data/wiktionary (run when updating)
   prepare.mjs              runs the dictionary build and copies PDF.js assets
   generate-icons.mjs       desktop and Android icons from public/icon.svg
+data/wiktionary/     distilled Wiktionary data (CC BY-SA 4.0), input to build-dictionary.mjs
 src/
   App.tsx                  shell, navigation, import, drag & drop, Android back button
   library/                 library grid/list, covers, details
@@ -112,7 +113,6 @@ src/
     read-aloud.ts          sentence-by-sentence TTS controller
   dictionary/              dictionary card and Dictionary page
   lib/dictionary/          Wiktionary + WordNet lookup and lemmatizer, StarDict reader, online sources, sanitizer
-data/wiktionary/           distilled Wiktionary data (CC BY-SA 4.0), input to build-dictionary.mjs
   lib/db.ts                IndexedDB storage (books, files, annotations, vocabulary, stats)
   vendor/foliate-js/       vendored foliate-js (MIT)
 tests/smoke.mjs            end-to-end test

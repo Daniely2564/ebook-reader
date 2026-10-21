@@ -1,92 +1,96 @@
 {
   "lines": 1492836,
-  "headwords": 166103,
-  "redirects": 93146,
-  "enBytes": 20139968,
+  "headwords": 176871,
+  "redirects": 231580,
+  "enBytes": 22226989,
   "translations": {
     "ko": {
-      "words": 1888,
-      "bytes": 55932
+      "words": 17582,
+      "bytes": 259206
     },
     "ja": {
-      "words": 2538,
-      "bytes": 106281
+      "words": 24261,
+      "bytes": 622118
     },
     "cmn": {
-      "words": 2536,
-      "bytes": 118974
+      "words": 27146,
+      "bytes": 891379
     },
     "es": {
-      "words": 3951,
-      "bytes": 118305
+      "words": 35516,
+      "bytes": 550204
     },
     "fr": {
-      "words": 3901,
-      "bytes": 106018
+      "words": 37044,
+      "bytes": 513646
     },
     "de": {
-      "words": 3944,
-      "bytes": 123459
+      "words": 36830,
+      "bytes": 630426
     },
     "it": {
-      "words": 3184,
-      "bytes": 88358
+      "words": 30393,
+      "bytes": 416005
     },
     "pt": {
-      "words": 3515,
-      "bytes": 97988
+      "words": 32130,
+      "bytes": 435302
     },
     "ru": {
-      "words": 3777,
-      "bytes": 184677
+      "words": 34950,
+      "bytes": 1087160
     },
     "vi": {
-      "words": 1511,
-      "bytes": 43559
+      "words": 12289,
+      "bytes": 177929
     },
     "ar": {
-      "words": 1869,
-      "bytes": 77704
+      "words": 16126,
+      "bytes": 393225
     },
     "hi": {
-      "words": 1491,
-      "bytes": 62433
+      "words": 11835,
+      "bytes": 298227
     },
     "id": {
-      "words": 1366,
-      "bytes": 35463
+      "words": 11716,
+      "bytes": 140624
     },
     "th": {
-      "words": 1277,
-      "bytes": 49032
+      "words": 9868,
+      "bytes": 222005
     },
     "tr": {
-      "words": 2171,
-      "bytes": 60806
+      "words": 19491,
+      "bytes": 277278
     },
     "nl": {
-      "words": 2952,
-      "bytes": 84209
+      "words": 27460,
+      "bytes": 391483
     },
     "pl": {
-      "words": 3617,
-      "bytes": 104701
+      "words": 33252,
+      "bytes": 511920
     },
     "uk": {
-      "words": 2039,
-      "bytes": 89786
+      "words": 18438,
+      "bytes": 500518
     },
     "fa": {
-      "words": 1163,
-      "bytes": 44802
+      "words": 9832,
+      "bytes": 217571
     },
     "he": {
-      "words": 1588,
-      "bytes": 57781
+      "words": 12151,
+      "bytes": 264658
     },
     "sv": {
-      "words": 2964,
-      "bytes": 80389
+      "words": 27699,
+      "bytes": 373670
+    },
+    "labels": {
+      "words": 40069,
+      "bytes": 1096158
     }
   },
   "bilingual": {
@@ -95,5 +99,5 @@
       "bytes": 754838
     }
   },
-  "seconds": 108
+  "seconds": 192
 }

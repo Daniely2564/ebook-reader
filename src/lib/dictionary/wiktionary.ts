@@ -1,6 +1,6 @@
 // Offline English Wiktionary (distilled by scripts/distill-wiktionary.mjs), plus
 // English→native-language dictionaries and translation lists from the same project.
-import { fetchGz, ShardSource } from './shards'
+import { ShardSource } from './shards'
 import { POS_LABEL, type DictEntry, type Meaning, type Sense } from './types'
 import { inWordNet, irregularBases, lemmaCandidates, normalizeQuery, queryVariants, spellingVariants, stemOf } from './wordnet'
 
@@ -79,7 +79,7 @@ const toEntry = (word: string, raw: WkEntry, groups = raw.m ?? [], casing = ''):
 // senses not worth leading a reader to another headword
 const MINOR = /obsolete|archaic|dated|rare|nonstandard|dialect|misspelling|eye dialect/i
 // archaic inflections still lead somewhere useful ("hath" → have); obsolete spellings don't
-const MINOR_INFLECTION = /obsolete|misspelling|nonstandard|eye dialect/i
+const MINOR_INFLECTION = /obsolete|misspelling|nonstandard|dialect/i
 const isMinor = (s: WkSense) => (INFLECTED_FORM.test(s.g) ? MINOR_INFLECTION : MINOR).test(`${s.l ?? ''} ${s.g}`)
 const splitTargets = (t: string) => t.toLowerCase().split(/\s*,\s*|\s+(?:and|or)\s+/).filter(Boolean)
 
@@ -228,20 +228,21 @@ export const lookupBilingual = async (lang: string, words: string[]): Promise<Di
   return out
 }
 
-// translation lists ("run" → 달리다, 뛰다) from the English Wiktionary
-const translations = new Map<string, Promise<Map<string, [string, string[]][]>>>()
+// translation lists ("run" → 달리다, 뛰다) from the English Wiktionary; each language refers
+// to the English sense labels in tr/labels by index
+const translations = new Map<string, ShardSource<[number, string[]][]>>()
+const translationLabels = new ShardSource<string[]>('dict/tr/labels', 8, 1)
 
 /** Wiktionary language code for an app language code. */
 export const translationLang = (lang: string) => (lang.startsWith('zh') ? 'cmn' : lang.split('-')[0])
 
-export const getTranslations = async (lang: string, word: string) => {
+export const getTranslations = async (lang: string, word: string): Promise<[string, string[]][] | undefined> => {
   const code = translationLang(lang)
-  let p = translations.get(code)
-  if (!p) {
-    p = fetchGz(`dict/tr/${code}.bin`)
-      .then(t => new Map(Object.entries(JSON.parse(t) as Record<string, [string, string[]][]>)))
-      .catch(() => new Map())
-    translations.set(code, p)
-  }
-  return (await p).get(word.toLowerCase())
+  let src = translations.get(code)
+  if (!src) translations.set(code, src = new ShardSource(`dict/tr/${code}`, 8, 1))
+  const key = word.toLowerCase()
+  const rows = await src.get(key)
+  if (!rows?.length) return undefined
+  const labels = (await translationLabels.get(key)) ?? []
+  return rows.map(([i, words]) => [labels[i] ?? '', words])
 }

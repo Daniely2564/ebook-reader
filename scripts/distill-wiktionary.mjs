@@ -86,12 +86,28 @@ const shortEtym = (text, max) => {
   }
   return t
 }
+// US/UK and untagged phonemic transcriptions; weak forms ("to" /tə/), letter sounds ("i" /ə/)
+// and other regions ("to" /t̪oː/, India) only when nothing else is given
+const US = /^(US|General-American|GA)$/
+const UK = /^(UK|Received-Pronunciation|British|RP)$/
+const isWeakIpa = s => {
+  const tags = s.tags ?? []
+  if (tags.some(t => /^(phoneme|letter|unstressed|weak|obsolete|archaic|dated)$/i.test(t))) return true
+  if (/weak|unstressed|letter/i.test(s.note ?? '')) return true
+  // regional unless one of its regions is US or UK ("Australia, General-American, RP" is fine)
+  const regions = tags.filter(t => /^[A-Z]/.test(t))
+  return regions.length > 0 && !regions.some(t => US.test(t) || UK.test(t))
+}
+/** [[us?, uk?], quality]: 2 = tagged US/UK, 1 = clean, 0 = weak or regional */
 const bestIpa = sounds => {
-  const ipas = (sounds ?? []).filter(s => s.ipa && s.ipa.startsWith('/'))
+  const all = (sounds ?? []).filter(s => s.ipa && s.ipa.startsWith('/'))
+  const good = all.filter(s => !isWeakIpa(s))
+  const ipas = good.length ? good : all
   const pick = re => ipas.find(s => (s.tags ?? []).some(t => re.test(t)))?.ipa
-  const us = pick(/^(US|General-American|GA)$/)
-  const uk = pick(/^(UK|Received-Pronunciation|British|RP)$/)
-  return [...new Set([us ?? ipas[0]?.ipa, uk].filter(Boolean).map(s => s.replace(/^\/|\/$/g, '').split(/\/,\s*\//)[0]))].slice(0, 2)
+  const us = pick(US)
+  const uk = pick(UK)
+  const ipa = [...new Set([us ?? ipas[0]?.ipa, uk].filter(Boolean).map(s => s.replace(/^\/|\/$/g, '').split(/\/,\s*\//)[0]))].slice(0, 2)
+  return [ipa, !good.length ? 0 : us || uk ? 2 : 1]
 }
 // only the short, canonical Commons recordings (x/xy/En-us-word.ogg)
 const bestAudio = sounds => {
@@ -99,10 +115,13 @@ const bestAudio = sounds => {
     .filter(u => u && /^[0-9a-f]\/[0-9a-f]{2}\/En-(us|uk|au|ca)-[^/]{1,40}\.ogg$/.test(u))
   return list.find(u => /\/En-us-/.test(u)) ?? list[0]
 }
+// "Near-synonyms: …" and "For quotations using this term, see Citations:…" are notes, not usage
+const NOT_EXAMPLE = /^(Near-)?(Synonyms?|Antonyms?|Hypernyms?|Hyponyms?|Holonyms?|Meronyms?|Coordinate terms?|Troponyms?)\s*:|see Citations:|^See also\b|^(c\. )?\d{4}s?,/i
 const examplesOf = (examples, max) => {
-  const ex = (examples ?? []).filter(e => e.text && e.type !== 'quotation' && e.text.length <= 160).map(e => clean(e.text))
+  const usable = (examples ?? []).filter(e => e.text && !NOT_EXAMPLE.test(e.text.trim()))
+  const ex = usable.filter(e => e.type !== 'quotation' && e.text.length <= 160).map(e => clean(e.text))
   if (ex.length) return ex.slice(0, max)
-  const q = (examples ?? []).find(e => e.text && e.type === 'quotation' && e.text.length <= 120 && !/[ſ\[\]]/.test(e.text))
+  const q = usable.find(e => e.type === 'quotation' && e.text.length <= 120 && !/[ſ\[\]]/.test(e.text))
   return q ? [clean(q.text)] : []
 }
 const wordsOf = list => [...new Set((list ?? []).map(x => clean(x.word)).filter(w => w && w.length < 40))]
@@ -154,8 +173,13 @@ for await (const line of open(input)) {
 
   let e = raw.get(key)
   if (!e) raw.set(key, e = { groups: [], etym: [] })
-  const ipa = bestIpa(d.sounds)
-  if (ipa.length && !e.ipa) e.ipa = ipa
+  // the first record's transcription, unless it was only a weak, letter or regional one
+  // ("I" the pronoun replaces "i" the letter's /ə/)
+  const [ipa, quality] = bestIpa(d.sounds)
+  if (ipa.length && (!e.ipa || (!e.ipaQ && quality > 0))) {
+    e.ipa = ipa
+    e.ipaQ = quality
+  }
   e.audio ??= bestAudio(d.sounds)
   if (d.etymology_text && e.etym.length < 2 && !senses.every(s => s.f)) e.etym.push(d.etymology_text)
   const group = { p: d.pos, s: senses, _forms: d.forms }
@@ -172,20 +196,27 @@ for await (const line of open(input)) {
     if (group.an) same.an = [...new Set([...(same.an ?? []), ...group.an])].slice(0, 5)
   } else e.groups.push(group)
 
-  for (const t of d.translations ?? []) {
+  // most translation tables are attached to a sense; only unmatched ones stay at the top level
+  const trs = [
+    ...(d.translations ?? []),
+    ...(d.senses ?? []).flatMap(s => (s.translations ?? []).map(t => (t.sense ? t : { ...t, sense: glossOf(s.glosses) }))),
+  ]
+  for (const t of trs) {
     const lang = t.code ?? t.lang_code
-    if (!t.word || !translations[lang]) continue
+    if (!t.word || !lang) continue
+    ;(e.trLangs ??= new Set()).add(lang)
+    if (!translations[lang]) continue
     const m = translations[lang]
     let rows = m.get(key)
     if (!rows) m.set(key, rows = [])
-    const sense = clean(t.sense ?? '').slice(0, 90)
+    const sense = clean(t.sense ?? '').replace(/\.$/, '').slice(0, 50)
     let row = rows.find(r => r[0] === sense)
     if (!row) {
-      if (rows.length >= 8) continue
+      if (rows.length >= 3) continue
       rows.push(row = [sense, []])
     }
     const w = clean(t.word) + (t.roman && lang !== 'ko' ? ` (${clean(t.roman)})` : '')
-    if (row[1].length < 5 && !row[1].includes(w)) row[1].push(w)
+    if (row[1].length < 3 && !row[1].includes(w) && w.length < 40) row[1].push(w)
   }
 }
 
@@ -196,6 +227,9 @@ const tierOf = (key, e) => {
   if (wordnet.has(key) || cmu[key]) return 1
   if (e.audio) return 1
   if (e.groups.some(g => g.s.some(s => s.l && LITERARY.test(s.l)))) return 2
+  // newer everyday words not in WordNet 3.1 or CMUdict (influencer, ransomware) usually
+  // have translation tables; obscure technical terms rarely do
+  if ((e.trLangs?.size ?? 0) >= 4) return 3
   return 0
 }
 const trimSenses = (senses, max) => {
@@ -211,13 +245,12 @@ for (const [key, e] of raw) if (!isFormOnly(e) && tierOf(key, e)) kept.add(key)
 
 for (const [key, e] of raw) {
   if (isFormOnly(e)) {
-    // irregular forms and alternative/archaic spellings become redirects; regular
-    // inflections are resolved by the lookup rules at runtime
+    // forms become redirects, in Wiktionary's order. Regular ones are kept too: the runtime
+    // rules can't always tell "knowest" → know or "stories" → story from storey.
     const redirects = []
     for (const g of e.groups) for (const s of g.s) {
       const target = s.f.toLowerCase()
       if (!kept.has(target) && !wordnet.has(target)) continue
-      if (derivable(key, target)) continue
       const rel = clean(s.g.replace(new RegExp(`\\s*(of|for)\\s+${s.f.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![\\p{L}\\p{N}]).*$`, 'iu'), '')) || 'form'
       if (!redirects.some(r => r[0] === s.f) && rel.length < 60) redirects.push([s.f, rel])
     }
@@ -226,7 +259,7 @@ for (const [key, e] of raw) {
   }
   if (!kept.has(key)) continue
   const tier = tierOf(key, e)
-  const maxSenses = tier === 1 ? 12 : 6
+  const maxSenses = tier === 1 ? 12 : tier === 2 ? 6 : 4
   const maxEx = tier === 1 ? 2 : 1
   const groups = []
   for (const g of e.groups) {
@@ -248,8 +281,10 @@ for (const [key, e] of raw) {
   }
   const out = { m: groups }
   if (e.ipa) out.i = e.ipa
+  // weak, letter or regional only: the build uses CMUdict instead when it has the word
+  if (e.ipa && !e.ipaQ) out.iq = 0
   if (e.audio) out.a = e.audio
-  const etym = [...new Set(e.etym.map(t => shortEtym(t, tier === 1 ? 170 : 110)).filter(Boolean))]
+  const etym = [...new Set(e.etym.map(t => shortEtym(t, tier === 1 ? 170 : tier === 2 ? 110 : 90)).filter(Boolean))]
   if (etym.length) out.e = etym
   entries.set(key, out)
 }
@@ -298,15 +333,39 @@ const writeLines = (file, map) => {
   return gz.length
 }
 for (const f of fs.readdirSync(outDir)) if (/\.jsonl\.gz$/.test(f)) fs.rmSync(path.join(outDir, f))
+
+// Translations of words that at least TR_MIN_LANGS of the languages translate (a proxy for
+// how common a word is). The English sense labels are stored once, in tr-labels, and each
+// language refers to them by index: [key, [[labelIndex, [words]], …]].
+const TR_MIN_LANGS = Number(process.env.TR_MIN_LANGS ?? 6)
+const writeTranslations = () => {
+  const coverage = new Map()
+  for (const m of Object.values(translations))
+    for (const k of m.keys()) if (entries.get(k)?.m) coverage.set(k, (coverage.get(k) ?? 0) + 1)
+  const labels = new Map()
+  const out = {}
+  for (const [lang, m] of Object.entries(translations)) {
+    const rows = new Map()
+    for (const [k, list] of m) {
+      if ((coverage.get(k) ?? 0) < TR_MIN_LANGS) continue
+      let l = labels.get(k)
+      if (!l) labels.set(k, l = [])
+      rows.set(k, list.map(([sense, words]) => {
+        if (!l.includes(sense)) l.push(sense)
+        return [l.indexOf(sense), words]
+      }))
+    }
+    out[lang] = { words: rows.size, bytes: writeLines(`tr-${lang}.jsonl.gz`, rows) }
+  }
+  out.labels = { words: labels.size, bytes: writeLines('tr-labels.jsonl.gz', labels) }
+  return out
+}
 const redirects = [...entries.values()].filter(e => e.r).length
 Object.assign(stats, {
   headwords: entries.size - redirects,
   redirects,
   enBytes: writeLines('en.jsonl.gz', entries),
-  translations: Object.fromEntries(Object.entries(translations).map(([lang, m]) => {
-    for (const k of [...m.keys()]) if (!entries.has(k)) m.delete(k)
-    return [lang, { words: m.size, bytes: writeLines(`tr-${lang}.jsonl.gz`, m) }]
-  })),
+  translations: writeTranslations(),
   bilingual: Object.fromEntries(Object.entries(bilingual).map(([lang, m]) => [lang, { words: m.size, bytes: writeLines(`bi-${lang}.jsonl.gz`, m) }])),
   seconds: Math.round((Date.now() - t0) / 1000),
 })

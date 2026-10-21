@@ -18,7 +18,7 @@
 //   exc.json             irregular inflections per part of speech (WordNet)
 //   wk/, wn/, bi/<lang>/ gzip'd JSON shards: <key>.bin, keyed by the first two
 //                        letters (three for large prefixes, listed in index.json)
-//   tr/<lang>.bin        Wiktionary translation tables for one language
+//   tr/<lang>/           Wiktionary translation tables for one language, sharded by first letter
 //
 // WordNet shard entry: { "<word>": { "i": "<ipa>", "m": [[pos, [[definition, examples[], synonyms[], antonyms[], typeOf[]], …]], …] } }
 // Wiktionary entries keep the distilled format documented in distill-wiktionary.mjs.
@@ -29,7 +29,7 @@ import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
 import { gunzipSync, gzipSync } from 'node:zlib'
 
-const VERSION = 6
+const VERSION = 7
 const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
 const out = path.join(root, 'public', 'dict')
 const require = createRequire(import.meta.url)
@@ -216,12 +216,12 @@ const shardFile = key => (/^(con|prn|aux|nul)$/.test(key) ? `${key}_` : key)
 
 const SPLIT_ABOVE = 400_000 // bytes of JSON per two-letter shard before it is split by the third letter
 let totalBytes = 0
-/** Writes a {word: entry} map as shards; large two-letter prefixes are split by a third letter. */
-const writeShards = (dir, map) => {
+/** Writes a {word: entry} map as shards by the first `len` letters; large shards are split by one more letter. */
+const writeShards = (dir, map, len = 2) => {
   fs.mkdirSync(path.join(out, dir), { recursive: true })
   const byTwo = new Map()
   for (const [word, entry] of map) {
-    const k = shardKey(word, 2)
+    const k = shardKey(word, len)
     if (!byTwo.has(k)) byTwo.set(k, new Map())
     byTwo.get(k).set(word, entry)
   }
@@ -243,7 +243,7 @@ const writeShards = (dir, map) => {
     split.push(k)
     const byThree = new Map()
     for (const [w, e] of m) {
-      const k3 = shardKey(w, 3)
+      const k3 = shardKey(w, len + 1)
       if (!byThree.has(k3)) byThree.set(k3, new Map())
       byThree.get(k3).set(w, e)
     }
@@ -275,7 +275,16 @@ const wkDir = path.join(root, 'data', 'wiktionary')
 const allWords = new Set(entries.keys())
 if (fs.existsSync(path.join(wkDir, 'en.jsonl.gz'))) {
   const wk = readLines(path.join(wkDir, 'en.jsonl.gz'))
-  for (const [w, e] of wk) if (!e.r) allWords.add(w)
+  for (const [w, e] of wk) {
+    if (e.r) continue
+    allWords.add(w)
+    // Wiktionary only had a weak, letter or regional transcription ("to" /t̪oː/): use CMUdict's
+    if ('iq' in e) {
+      const ipa = ipaFor(w)
+      if (ipa) e.i = [ipa]
+      delete e.iq
+    }
+  }
   sources.wiktionary = { ...writeShards('wk', wk), redirects: [...wk.values()].filter(e => e.r).length }
   sources.bilingual = {}
   sources.translations = {}
@@ -283,14 +292,8 @@ if (fs.existsSync(path.join(wkDir, 'en.jsonl.gz'))) {
     const bi = f.match(/^bi-([a-z]+)\.jsonl\.gz$/)
     if (bi) sources.bilingual[bi[1]] = writeShards(`bi/${bi[1]}`, readLines(path.join(wkDir, f)))
     const tr = f.match(/^tr-([a-z]+)\.jsonl\.gz$/)
-    if (tr) {
-      fs.mkdirSync(path.join(out, 'tr'), { recursive: true })
-      const m = readLines(path.join(wkDir, f))
-      const gz = gzipSync(Buffer.from(JSON.stringify(Object.fromEntries(m))), { level: 9 })
-      fs.writeFileSync(path.join(out, 'tr', `${tr[1]}.bin`), gz)
-      totalBytes += gz.length
-      sources.translations[tr[1]] = { words: m.size, bytes: gz.length }
-    }
+    // tr-labels holds the English sense labels the languages refer to by index
+    if (tr) sources.translations[tr[1]] = writeShards(`tr/${tr[1]}`, readLines(path.join(wkDir, f)), 1)
   }
 } else {
   console.warn('data/wiktionary/en.jsonl.gz not found — building WordNet only')

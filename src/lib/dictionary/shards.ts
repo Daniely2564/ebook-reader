@@ -32,16 +32,18 @@ export const retryable = <T>(load: () => Promise<T>, fallback: T, forget: () => 
     return fallback
   })
 
-/** A dictionary split into shards by the first two (or three) letters, loaded on demand. */
+/** A dictionary split into shards by its first letters (one more for large prefixes), loaded on demand. */
 export class ShardSource<T> {
   #dir: string
   #max: number
+  #len: number
   #split: Promise<Set<string>> | null = null
   #cache = new Map<string, Promise<Record<string, T>>>()
 
-  constructor(dir: string, maxShards = 32) {
+  constructor(dir: string, maxShards = 32, keyLength = 2) {
     this.#dir = dir
     this.#max = maxShards
+    this.#len = keyLength
   }
 
   #index() {
@@ -78,8 +80,8 @@ export class ShardSource<T> {
   async get(word: string): Promise<T | undefined> {
     if (!word) return undefined
     const split = await this.#index()
-    const two = shardKey(word, 2)
-    const shard = await this.#shard(split.has(two) ? shardKey(word, 3) : two)
+    const key = shardKey(word, this.#len)
+    const shard = await this.#shard(split.has(key) ? shardKey(word, this.#len + 1) : key)
     return Object.prototype.hasOwnProperty.call(shard, word) ? shard[word] : undefined
   }
 }
