@@ -1,18 +1,29 @@
-import { AlignJustify, AlignLeft, Columns2, File, FileText, Minus, Plus, RotateCcw, ScrollText, Sun, X } from 'lucide-react'
+import { AlignJustify, AlignLeft, Columns2, File, FileText, Minus, Plus, RotateCcw, ScrollText, Sun, TextWrap, X } from 'lucide-react'
 import { useEffect } from 'react'
 import { useSettings, type Settings } from '../lib/settings'
 import { FONTS, injectFontPreviews, THEMES } from '../lib/themes'
 import { IconButton, Segmented, Slider, Switch } from '../components/ui'
+import type { ZoomAction } from './types'
 
 const TEXT_KEYS: (keyof Settings)[] = ['font', 'fontSize', 'fontWeight', 'lineHeight', 'paragraphSpacing', 'letterSpacing', 'justify', 'hyphenate', 'margin', 'maxWidth', 'flow', 'columns', 'animated', 'runningHeads', 'overrideColors']
 const PDF_KEYS: (keyof Settings)[] = ['pdfThemed', 'pdfScroll', 'pdfSpread', 'pdfZoom']
+const ZOOM_FITS: { value: string; action: ZoomAction; label: string; title: string }[] = [
+  { value: 'auto', action: 'reset', label: 'Auto', title: 'Automatic' },
+  { value: 'page-width', action: 'fit-width', label: 'Width', title: 'Fit the page width' },
+  { value: 'page-fit', action: 'fit-page', label: 'Page', title: 'Fit the whole page' },
+  { value: 'text-width', action: 'fit-text', label: 'Text', title: 'Fit the text, trimming the margins' },
+]
 
-export const TypographyPanel = ({ open, onClose, kind, onZoom, zoomLabel }: {
+export const TypographyPanel = ({ open, onClose, kind, pdfView, onPdfView, onZoom, zoomLabel, zoomMode }: {
   open: boolean
   onClose: () => void
   kind: 'reflowable' | 'pdf'
-  onZoom?: (a: 'in' | 'out' | 'fit-width' | 'fit-page' | 'reset') => void
+  /** set for PDF books: the original pages or flowing text */
+  pdfView?: 'pages' | 'flow'
+  onPdfView?: (v: 'pages' | 'flow') => void
+  onZoom?: (a: ZoomAction) => void
   zoomLabel?: string
+  zoomMode?: string
 }) => {
   const s = useSettings()
   useEffect(() => {
@@ -29,6 +40,19 @@ export const TypographyPanel = ({ open, onClose, kind, onZoom, zoomLabel }: {
           <IconButton label="Close" onClick={onClose}><X size={19} /></IconButton>
         </div>
         <div className="typo-body">
+          {pdfView && (
+            <>
+              <Segmented className="view-toggle" value={pdfView} onChange={v => onPdfView?.(v)} options={[
+                { value: 'pages', label: <><FileText size={15} />Original pages</>, title: 'Show the PDF pages as they are' },
+                { value: 'flow', label: <><TextWrap size={15} />Flowing text</>, title: 'Rebuild the text so it fits the screen and follows your font settings' },
+              ]} />
+              <p className="typo-hint">
+                {pdfView === 'flow'
+                  ? 'The text is rebuilt to fit your screen. Switch back to original pages for tables, equations or complex layouts.'
+                  : 'Flowing text fits the words to your screen, like an ebook, so there is no zooming or panning.'}
+              </p>
+            </>
+          )}
           <div className="themes">
             {THEMES.map(t => (
               <button key={t.id} className={`theme-swatch ${s.theme === t.id ? 'on' : ''}`} onClick={() => s.set({ theme: t.id })}
@@ -103,8 +127,24 @@ export const TypographyPanel = ({ open, onClose, kind, onZoom, zoomLabel }: {
             </>
           ) : (
             <>
+              <div className="typo-section">Zoom</div>
+              <div className="typo-row">
+                <span>Fit</span>
+                <div className="zoom-btns">
+                  <IconButton label="Zoom out" onClick={() => onZoom?.('out')}><Minus size={16} /></IconButton>
+                  <span className="zoom-value">{zoomLabel}</span>
+                  <IconButton label="Zoom in" onClick={() => onZoom?.('in')}><Plus size={16} /></IconButton>
+                </div>
+              </div>
+              <Segmented className="view-toggle" value={ZOOM_FITS.some(z => z.value === zoomMode) ? zoomMode! : ''} onChange={v => {
+                const fit = ZOOM_FITS.find(z => z.value === v)!
+                // also the starting zoom for PDFs opened for the first time
+                s.set({ pdfZoom: v })
+                onZoom?.(fit.action)
+              }} options={ZOOM_FITS.map(z => ({ value: z.value, label: z.label, title: z.title }))} />
+              <p className="typo-hint">Pinch to zoom, or double-tap a column to zoom into it. Each PDF keeps its zoom and position.</p>
+
               <div className="typo-section">Pages</div>
-              <Switch label="Tint pages with theme" hint="Recolors pages to match Sepia, Night and other themes" checked={s.pdfThemed} onChange={v => s.set({ pdfThemed: v })} />
               <div className="typo-row">
                 <span>Scrolling</span>
                 <Segmented value={s.pdfScroll} onChange={v => s.set({ pdfScroll: v })} options={[
@@ -117,19 +157,7 @@ export const TypographyPanel = ({ open, onClose, kind, onZoom, zoomLabel }: {
                   { value: 'none', label: <File size={15} />, title: 'Single pages' }, { value: 'odd', label: <Columns2 size={15} />, title: 'Two-page spread' },
                 ]} />
               </div>
-              <div className="typo-row">
-                <span>Zoom {zoomLabel && <small className="muted">({zoomLabel})</small>}</span>
-                <div className="zoom-btns">
-                  <IconButton label="Zoom out" onClick={() => onZoom?.('out')}><Minus size={16} /></IconButton>
-                  <IconButton label="Zoom in" onClick={() => onZoom?.('in')}><Plus size={16} /></IconButton>
-                </div>
-              </div>
-              <Segmented value={['page-width', 'page-fit', 'auto'].includes(s.pdfZoom) ? s.pdfZoom : ''} onChange={v => {
-                s.set({ pdfZoom: v })
-                onZoom?.(v === 'page-width' ? 'fit-width' : v === 'page-fit' ? 'fit-page' : 'reset')
-              }} options={[
-                { value: 'auto', label: 'Auto' }, { value: 'page-width', label: 'Fit width' }, { value: 'page-fit', label: 'Fit page' },
-              ]} />
+              <Switch label="Tint pages with theme" hint="Recolors pages to match Sepia, Night and other themes" checked={s.pdfThemed} onChange={v => s.set({ pdfThemed: v })} />
             </>
           )}
         </div>

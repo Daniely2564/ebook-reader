@@ -59,7 +59,9 @@ if (process.argv.includes('--if-missing')) {
 }
 
 const wnDir = path.join(path.dirname(require.resolve('wordnet-db/package.json')), 'dict')
-const excDir = path.join(path.dirname(require.resolve('wndb-with-exceptions/package.json')), 'dict')
+// The package's postinstall copies data/*.exc into dict/; package managers that skip install scripts (pnpm) leave only data/.
+const excPkg = path.dirname(require.resolve('wndb-with-exceptions/package.json'))
+const excDir = fs.existsSync(path.join(excPkg, 'dict', 'noun.exc')) ? path.join(excPkg, 'dict') : path.join(excPkg, 'data')
 const cmuDir = path.dirname(require.resolve('cmu-pronouncing-dictionary/package.json'))
 
 const t0 = Date.now()

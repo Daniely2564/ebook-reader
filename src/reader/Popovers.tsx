@@ -10,12 +10,14 @@ import type { Rect } from './text'
 const COLORS = Object.keys(HIGHLIGHT_COLORS) as HighlightColor[]
 
 /** A card positioned next to a viewport rectangle, flipping above/below to fit. */
-export const Floating = ({ rect, prefer = 'above', className = '', children, gap = 12, keepSelection }: {
+export const Floating = ({ rect, prefer = 'above', className = '', children, gap = 12, belowGap = gap, keepSelection }: {
   rect: Rect
   prefer?: 'above' | 'below'
   className?: string
   children: ReactNode
   gap?: number
+  /** distance when placed below, e.g. to clear touch selection handles */
+  belowGap?: number
   /** don't let clicks on the card clear the text selection */
   keepSelection?: boolean
 }) => {
@@ -30,16 +32,16 @@ export const Floating = ({ rect, prefer = 'above', className = '', children, gap
       const cx = (rect.left + rect.right) / 2
       const left = Math.max(8, Math.min(cx - w / 2, innerWidth - w - 8))
       const above = rect.top - gap - 8
-      const below = innerHeight - rect.bottom - gap - 8
+      const below = innerHeight - rect.bottom - belowGap - 8
       const useBelow = prefer === 'below' ? below >= h || below >= above : !(above >= h || above >= below)
-      const top = useBelow ? Math.min(innerHeight - h - 8, rect.bottom + gap) : Math.max(8, rect.top - gap - h)
+      const top = useBelow ? Math.min(innerHeight - h - 8, rect.bottom + belowGap) : Math.max(8, rect.top - gap - h)
       setPos({ left, top, below: useBelow })
     }
     place()
     const ro = new ResizeObserver(place)
     ro.observe(el)
     return () => ro.disconnect()
-  }, [rect, prefer, gap])
+  }, [rect, prefer, gap, belowGap])
   return (
     <div ref={ref} className={`floating ${className} ${pos?.below ? 'below' : 'above'}`}
       style={pos ? { left: pos.left, top: pos.top } : { left: 0, top: 0, visibility: 'hidden' }}
@@ -69,7 +71,8 @@ export const SelectionMenu = ({ rect, canHighlight, onHighlight, onNote, onDefin
   onSearch: () => void
   onSpeak: () => void
 }) => (
-  <Floating rect={rect} prefer={isTouch ? 'below' : 'above'} className="sel-menu" keepSelection>
+  // above the selection, where it can't cover the selection handles (they hang below the text on touch screens)
+  <Floating rect={rect} prefer="above" belowGap={isTouch ? 34 : 12} className="sel-menu" keepSelection>
     {canHighlight && <><Swatches onPick={onHighlight} /><div className="sel-sep" /></>}
     <div className="sel-actions">
       {canHighlight && <button onClick={onNote}><NotebookPen size={17} /><span>Note</span></button>}
@@ -127,12 +130,18 @@ export const DictionaryPopup = ({ word, rect, context, lang, bookId, bookTitle, 
     </>
   )
   if (innerWidth < 640) {
+    // the sheet takes the half of the screen away from the word, so the word and its
+    // selection handles stay visible (and draggable, to select more text)
+    const atTop = (rect.top + rect.bottom) / 2 > innerHeight / 2
+    const room = atTop ? rect.top - 16 : innerHeight - rect.bottom - 16
     return (
       <div className="dict-sheet-backdrop" onPointerDown={e => e.target === e.currentTarget && onClose()}>
-        <div className="dict-sheet" onPointerDown={e => e.stopPropagation()}>
-          <div className="sheet-grip" />
+        <div className={`dict-sheet ${atTop ? 'top' : ''}`} style={{ maxHeight: `min(72dvh, ${Math.round(Math.max(room, innerHeight * 0.4))}px)` }}
+          onPointerDown={e => e.stopPropagation()}>
+          {!atTop && <div className="sheet-grip" />}
           <IconButton label="Close" className="dict-close" onClick={onClose}><X size={18} /></IconButton>
           {body}
+          {atTop && <div className="sheet-grip" />}
         </div>
       </div>
     )

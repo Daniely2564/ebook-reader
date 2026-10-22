@@ -1,4 +1,4 @@
-import { ArrowLeft, Bookmark, Ellipsis, Expand, Headphones, Keyboard, ListTree, Maximize, Minimize, Minus, NotebookPen, Plus, Search, Settings2, Shrink, Type, Undo2 } from 'lucide-react'
+import { ArrowLeft, Bookmark, Ellipsis, Expand, FileText, Headphones, Keyboard, ListTree, Maximize, Minimize, Minus, NotebookPen, Plus, Search, Settings2, Shrink, TextWrap, Type, Undo2 } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { SystemBars, SystemBarsStyle } from '@capacitor/core'
 import { compare as compareCFI } from '../vendor/foliate-js/epubcfi.js'
@@ -22,8 +22,9 @@ import type { EngineCallbacks, ReaderEngine, Relocation, SelectionInfo, TapZone 
 const VIEW_KEYS: (keyof Settings)[] = ['theme', 'font', 'fontSize', 'fontWeight', 'lineHeight', 'paragraphSpacing', 'letterSpacing', 'justify', 'hyphenate',
   'overrideColors', 'margin', 'maxWidth', 'flow', 'columns', 'animated', 'runningHeads', 'pdfThemed', 'pdfScroll', 'pdfSpread', 'pdfZoom']
 
-const isOnPage = (a: Annotation, loc: Relocation, kind: ReaderEngine['kind']) => {
-  if (kind === 'pdf') return a.locator === `pdf:${loc.page?.current}`
+const isOnPage = (a: Annotation, loc: Relocation) => {
+  // PDF bookmarks name a page, in both the page view and flowing text
+  if (a.locator.startsWith('pdf:')) return a.locator === `pdf:${loc.page?.current}`
   if (!loc.range) return false
   try {
     return compareCFI(a.locator, loc.range.start) >= 0 && compareCFI(a.locator, loc.range.end) <= 0
@@ -70,8 +71,13 @@ export const Reader = ({ bookId, target }: { bookId: string; target?: string }) 
   const lastActivity = useRef(Date.now())
   const locRef = useRef<Relocation | null>(null)
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  /** bumped to reopen the book in another view (PDF pages ↔ flowing text) */
+  const [session, setSession] = useState(0)
+  const reopenAt = useRef<string | null>(null)
   const narrow = typeof innerWidth === 'number' && innerWidth < 720
   const theme = themeById(settings.theme)
+  const pdfBook = book?.format === 'pdf'
+  const pdfFlow = pdfBook && book?.view?.pdfMode === 'flow'
 
   // ---------------------------------------------------------------- persistence
   const saveProgress = useCallback((r: Relocation | null, immediate = false) => {
@@ -170,7 +176,7 @@ export const Reader = ({ bookId, target }: { bookId: string; target?: string }) 
   }
 
   const currentBookmark = useMemo(() => (loc && engine
-    ? annotations.find(a => a.kind === 'bookmark' && isOnPage(a, loc, engine.kind))
+    ? annotations.find(a => a.kind === 'bookmark' && isOnPage(a, loc))
     : undefined), [annotations, loc, engine])
 
   const toggleBookmark = async () => {
@@ -181,9 +187,9 @@ export const Reader = ({ bookId, target }: { bookId: string; target?: string }) 
     }
     const a: Annotation = {
       id: uid(), bookId, kind: 'bookmark',
-      locator: engine.kind === 'pdf' ? `pdf:${loc.page?.current ?? 1}` : (loc.range?.start ?? loc.locator),
+      locator: pdfBook ? `pdf:${loc.page?.current ?? 1}` : (loc.range?.start ?? loc.locator),
       text: loc.excerpt || loc.chapter || locationText(loc, engine.kind),
-      chapter: loc.chapter, fraction: loc.fraction, page: engine.kind === 'pdf' ? loc.page?.current : undefined,
+      chapter: loc.chapter, fraction: loc.fraction, page: pdfBook ? loc.page?.current : undefined,
       createdAt: Date.now(), updatedAt: Date.now(),
     }
     await putAnnotation(a)
@@ -253,6 +259,9 @@ export const Reader = ({ bookId, target }: { bookId: string; target?: string }) 
     onActivity: () => {
       lastActivity.current = Date.now()
     },
+    onViewChange: view => {
+      updateBook(bookId, b => ({ view: { ...b.view, ...view } })).catch(() => {})
+    },
     onError: msg => toast(msg, 'error'),
   }
   const callbacks = useMemo<EngineCallbacks>(() => ({
@@ -262,6 +271,7 @@ export const Reader = ({ bookId, target }: { bookId: string; target?: string }) 
     onTap: z => handlers.current.onTap(z),
     onKey: e => handlers.current.onKey(e),
     onActivity: () => handlers.current.onActivity(),
+    onViewChange: v => handlers.current.onViewChange?.(v),
     onError: m => handlers.current.onError(m),
   }), [])
 
@@ -269,6 +279,8 @@ export const Reader = ({ bookId, target }: { bookId: string; target?: string }) 
   useEffect(() => {
     let cancelled = false
     let eng: ReaderEngine | null = null
+    const at = reopenAt.current
+    reopenAt.current = null
     setEngine(null)
     setError(null)
     setLoc(null)
@@ -278,12 +290,31 @@ export const Reader = ({ bookId, target }: { bookId: string; target?: string }) 
       if (cancelled) return
       setBook(rec)
       // engines are loaded on demand to keep startup light
-      eng = rec.format === 'pdf'
-        ? new (await import('./pdf-engine')).PdfEngine(new Uint8Array(await blob.arrayBuffer()), callbacks)
-        : new (await import('./epub-engine')).EpubEngine(new File([blob], rec.fileName, { type: blob.type }), rec.title, callbacks)
+      if (rec.format !== 'pdf') eng = new (await import('./epub-engine')).EpubEngine(new File([blob], rec.fileName, { type: blob.type }), rec.title, callbacks)
+      else {
+        const data = new Uint8Array(await blob.arrayBuffer())
+        const zoom = rec.view?.pdfZoom
+        eng = rec.view?.pdfMode === 'flow'
+          ? new (await import('./pdf-flow-engine')).PdfFlowEngine(data, rec.title, callbacks)
+          : new (await import('./pdf-engine')).PdfEngine(data, callbacks, { zoom: typeof zoom === 'string' ? zoom : undefined })
+      }
       if (cancelled) return
       eng.applySettings(getSettings())
-      await eng.open(stageRef.current!, target ?? rec.location)
+      const location = at ?? target ?? rec.location
+      try {
+        await eng.open(stageRef.current!, location)
+      } catch (e) {
+        // a scanned PDF has no text to flow: fall back to its pages
+        if ((e as Error)?.name !== 'FlowUnavailableError') throw e
+        eng.destroy()
+        eng = null
+        if (cancelled) return
+        toast((e as Error).message, 'error')
+        await updateBook(bookId, b => ({ view: { ...b.view, pdfMode: 'pages' } }))
+        reopenAt.current = location ?? null
+        setSession(s => s + 1)
+        return
+      }
       if (cancelled) return
       const anns = await getAnnotations(bookId)
       if (cancelled) return
@@ -304,7 +335,21 @@ export const Reader = ({ bookId, target }: { bookId: string; target?: string }) 
       eng?.destroy()
       refreshLibrary()
     }
-  }, [bookId, callbacks, saveProgress, refreshLibrary]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [bookId, session, callbacks, saveProgress, refreshLibrary]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  /** Reopens a PDF as flowing text or as its original pages, at the same place. */
+  const switchPdfView = async (flow: boolean) => {
+    if (!book || !pdfBook || flow === pdfFlow) return
+    reopenAt.current = locRef.current?.locator ?? null
+    const view = { ...book.view, pdfMode: flow ? 'flow' : 'pages' }
+    await updateBook(bookId, { view })
+    setBook({ ...book, view })
+    setSelection(null)
+    setLookup(null)
+    setActiveAnn(null)
+    setReturnTo(null)
+    setSession(s => s + 1)
+  }
 
   useEffect(() => {
     engine?.setAnnotations(annotations)
@@ -488,6 +533,7 @@ export const Reader = ({ bookId, target }: { bookId: string; target?: string }) 
       case '/': openPanel('search'); break
       case 'b': toggleBookmark(); break
       case 'a': setPanel(p => ({ ...p, open: false })); setTypo(v => !v); break
+      case 'v': if (!pdfBook) return; switchPdfView(!pdfFlow); break
       case 'f': toggleFullscreen(); break
       case 'r': toggleReadAloud(); break
       case '?': setHelp(true); break
@@ -532,7 +578,11 @@ export const Reader = ({ bookId, target }: { bookId: string; target?: string }) 
     ? `${formatMinutesLeft(loc.timeLeft.chapter)} left in chapter` : ''
   const isPdf = engine?.kind === 'pdf'
 
+  const viewToggle = pdfFlow
+    ? { label: 'Show original pages', icon: <FileText size={16} />, onSelect: () => switchPdfView(false) }
+    : { label: 'Show as flowing text', icon: <TextWrap size={16} />, onSelect: () => switchPdfView(true) }
   const moreMenu = [
+    ...(pdfBook ? [viewToggle, 'sep' as const] : []),
     { label: fullscreen ? 'Exit full screen' : 'Full screen', icon: fullscreen ? <Shrink size={16} /> : <Expand size={16} />, onSelect: () => toggleFullscreen() },
     { label: 'Keyboard shortcuts', icon: <Keyboard size={16} />, onSelect: () => setHelp(true) },
     { label: 'Settings', icon: <Settings2 size={16} />, onSelect: () => openSettings(true) },
@@ -571,6 +621,11 @@ export const Reader = ({ bookId, target }: { bookId: string; target?: string }) 
           <IconButton className="wide-only" label="Read aloud (R)" active={tts !== 'idle'} onClick={toggleReadAloud}><Headphones size={20} /></IconButton>
           <IconButton className="wide-only" label="Appearance (A)" active={typo} onClick={() => { setPanel(p => ({ ...p, open: false })); setTypo(v => !v) }}><Type size={20} /></IconButton>
           <IconButton className="wide-only" label={fullscreen ? 'Exit full screen (F)' : 'Full screen (F)'} onClick={() => toggleFullscreen()}>{fullscreen ? <Minimize size={19} /> : <Maximize size={19} />}</IconButton>
+          {pdfBook && (
+            <IconButton label={pdfFlow ? 'Show original pages (V)' : 'Show as flowing text (V)'} active={pdfFlow} onClick={() => switchPdfView(!pdfFlow)}>
+              <TextWrap size={20} />
+            </IconButton>
+          )}
           <IconButton label={currentBookmark ? 'Remove bookmark (B)' : 'Bookmark this page (B)'} active={!!currentBookmark} onClick={toggleBookmark}>
             <Bookmark size={20} fill={currentBookmark ? 'currentColor' : 'none'} />
           </IconButton>
@@ -630,8 +685,9 @@ export const Reader = ({ bookId, target }: { bookId: string; target?: string }) 
           searchQuery={searchQuery} onSearchQuery={setSearchQuery} />
       )}
 
-      <TypographyPanel open={typo} onClose={() => setTypo(false)} kind={engine?.kind ?? 'reflowable'}
-        onZoom={a => engine?.zoom?.(a)} zoomLabel={engine?.zoomLabel} />
+      <TypographyPanel open={typo} onClose={() => setTypo(false)} kind={engine?.kind ?? (pdfBook && !pdfFlow ? 'pdf' : 'reflowable')}
+        pdfView={pdfBook ? (pdfFlow ? 'flow' : 'pages') : undefined} onPdfView={v => switchPdfView(v === 'flow')}
+        onZoom={a => engine?.zoom?.(a)} zoomLabel={engine?.zoomLabel} zoomMode={engine?.zoomMode} />
 
       {selection && (
         <SelectionMenu rect={selection.rect} canHighlight={!!selection.locator}
@@ -711,6 +767,7 @@ export const Reader = ({ bookId, target }: { bookId: string; target?: string }) 
             ['N', 'Notes & highlights'],
             ['B', 'Bookmark page'],
             ['A', 'Appearance'],
+            ...(pdfBook ? [['V', 'Flowing text / original pages']] : []),
             ['R', 'Read aloud'],
             ['F', 'Full screen'],
             [`${modKey} + / −`, isPdf ? 'Zoom in / out' : 'Larger / smaller text'],

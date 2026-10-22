@@ -19,7 +19,8 @@ A calm, fast ebook reader for **desktop (Electron)** and **Android (Capacitor)**
 - Paginated two-column layout on wide screens or continuous scroll, with page-turn animation, running header, page numbers and "minutes left in chapter".
 - 7 themes (Light, Paper, Sepia, Sage, Dusk, Night, Black), plus a brightness dimmer.
 - Typography: 8 bundled fonts (Literata, Source Serif, Merriweather, Inter, Atkinson Hyperlegible, OpenDyslexic, and system fonts), size, weight, line spacing, letter spacing, paragraph spacing, margins, line length, justification and hyphenation.
-- PDF: continuous or page-by-page scrolling, two-page spreads, fit width/page, pinch and Ctrl+wheel zoom, page tinting that follows the theme (sepia, inverted night mode), selectable text.
+- PDF: continuous or page-by-page scrolling, two-page spreads, fit width / page / text (trims the margins), pinch, double-tap (zooms into the column) and Ctrl+wheel zoom, page tinting that follows the theme (sepia, inverted night mode), selectable text. Each PDF remembers its zoom and position, and turning pages keeps the column you're reading in view.
+- **Flowing text** for PDFs (`V`): the PDF's text is rebuilt as an ebook, with paragraphs, headings and figures, so it follows your font, size and theme on any screen. Running headers and page numbers are dropped and hyphenated words rejoined. Highlights, bookmarks and your place carry over between flowing text and the original pages.
 - Tap/click zones, swipe, mouse wheel and full keyboard control (press `?` in the reader).
 - Table of contents, full-text search with highlighted results, footnote popups, a "Back to page X" chip after jumps, and reading position restore.
 
@@ -113,7 +114,9 @@ src/
   reader/
     Reader.tsx             reader UI shared by all formats
     epub-engine.ts         foliate-js engine (EPUB/MOBI/FB2/CBZ)
-    pdf-engine.ts          PDF.js engine
+    pdf-engine.ts          PDF.js engine (original pages)
+    pdf-flow.ts            PDF → reflowable book conversion for flowing text
+    pdf-flow-engine.ts     flowing-text engine (foliate-js reading the converted PDF)
     read-aloud.ts          sentence-by-sentence TTS controller
   dictionary/              dictionary card and Dictionary page
   lib/dictionary/          Wiktionary + WordNet lookup and lemmatizer, StarDict reader, online sources, sanitizer

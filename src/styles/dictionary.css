@@ -104,8 +104,14 @@
 }
 .dict-sheet .dict { flex: 1; min-height: 0; }
 .dict-sheet .dict-head { padding-right: 52px; }
+.dict-sheet.top {
+  top: 0; bottom: auto; border-radius: 0 0 20px 20px;
+  padding: var(--sat) 0 0; animation: slide-down .25s var(--ease);
+}
+.dict-sheet.top .sheet-grip { margin: 0 auto 8px; }
 .sheet-grip { width: 38px; height: 4px; border-radius: 4px; background: var(--border); margin: 8px auto 0; flex: none; }
 .dict-close { position: absolute; top: 14px; right: 10px; color: var(--muted); }
+.dict-sheet.top .dict-close { top: calc(var(--sat) + 6px); }
 
 /* dictionary page */
 .dictionary-page { max-width: 820px; }

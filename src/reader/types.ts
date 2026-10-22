@@ -56,6 +56,14 @@ export interface SpeechChunk {
 
 export type TapZone = 'left' | 'center' | 'right'
 
+export type ZoomAction = 'in' | 'out' | 'fit-width' | 'fit-page' | 'fit-text' | 'reset'
+
+/** Per-book view state the engine wants remembered (stored in BookRecord.view). */
+export interface ViewState {
+  /** 'auto' | 'page-width' | 'page-fit' | 'text-width' | a scale such as "1.5" */
+  pdfZoom?: string
+}
+
 export interface EngineCallbacks {
   onRelocate(r: Relocation): void
   onSelection(s: SelectionInfo | null): void
@@ -64,6 +72,7 @@ export interface EngineCallbacks {
   onKey(e: KeyboardEvent): void
   onActivity(): void
   onFootnote?(el: HTMLElement | null, rect: SelectionInfo['rect']): void
+  onViewChange?(view: ViewState): void
   onError(message: string): void
 }
 
@@ -93,6 +102,8 @@ export interface ReaderEngine {
   speechAdvance(): Promise<boolean>
   clearSpeech(): void
   /** zoom (PDF) */
-  zoom?(action: 'in' | 'out' | 'fit-width' | 'fit-page' | 'reset'): void
+  zoom?(action: ZoomAction): void
   readonly zoomLabel?: string
+  /** the current zoom: a fit mode (see ViewState.pdfZoom) or a scale */
+  readonly zoomMode?: string
 }

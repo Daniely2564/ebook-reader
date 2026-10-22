@@ -27,8 +27,8 @@
     "dist:mac": "npm run build && electron-builder --mac",
     "android:sync": "npm run build && cap sync android",
     "android:open": "cap open android",
-    "android:apk": "npm run android:sync && cd android && ./gradlew assembleDebug",
-    "android:release": "npm run android:sync && cd android && ./gradlew assembleRelease",
+    "android:apk": "npm run android:sync && node scripts/gradle.mjs assembleDebug",
+    "android:release": "npm run android:sync && node scripts/gradle.mjs assembleRelease",
     "test:e2e": "npm run build && node tests/smoke.mjs",
     "icons": "node scripts/generate-icons.mjs"
   },

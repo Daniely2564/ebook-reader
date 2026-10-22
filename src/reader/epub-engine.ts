@@ -1,6 +1,6 @@
 // Reflowable books (EPUB, MOBI/AZW3, FB2, CBZ) rendered with foliate-js.
 import '../vendor/foliate-js/view.js'
-import type { FoliateRelocateDetail, FoliateTocItem, FoliateView } from '../vendor/foliate-js/view.js'
+import type { FoliateBook, FoliateRelocateDetail, FoliateTocItem, FoliateView } from '../vendor/foliate-js/view.js'
 import { Overlayer } from '../vendor/foliate-js/overlayer.js'
 import { FootnoteHandler } from '../vendor/foliate-js/footnotes.js'
 import type { Annotation } from '../lib/db'
@@ -8,7 +8,7 @@ import type { Settings } from '../lib/settings'
 import { fontById, fontFaceCss, HIGHLIGHT_COLORS, themeById, type ReaderTheme } from '../lib/themes'
 import { isElision } from '../lib/dictionary/wordnet'
 import { contextSentence, rectOf, splitSentences } from './text'
-import type { EngineCallbacks, ReaderEngine, Relocation, SearchHit, SpeechChunk, TocItem } from './types'
+import type { EngineCallbacks, ReaderEngine, Relocation, SearchHit, SelectionInfo, SpeechChunk, TocItem } from './types'
 
 const SENTENCE_BLOCKS = 'p, h1, h2, h3, h4, h5, h6, li, blockquote, dd, dt, figcaption, td, th, pre, div, section, article, body'
 
@@ -78,7 +78,7 @@ body *:not(a):not(a *):not(img):not(svg):not(svg *):not(video) {
   background-color: transparent !important;
   border-color: ${theme.border} !important;
 }` : ''}
-${theme.dark ? 'img, svg image, video { filter: brightness(.86) contrast(1.06); }' : ''}
+${theme.dark ? 'img, svg image, video, .fig-b::before, .fig-a::after { filter: brightness(.86) contrast(1.06); }' : ''}
 ::selection { background: ${theme.selection}; }
 ::highlight(lumen-tts) { background-color: ${theme.dark ? 'rgba(240,164,87,.32)' : 'rgba(255,196,0,.38)'}; }
 aside[epub|type~="endnote"], aside[epub|type~="footnote"], aside[epub|type~="note"], aside[epub|type~="rearnote"] { display: none; }
@@ -92,7 +92,7 @@ export class EpubEngine implements ReaderEngine {
   language?: string
   dir?: 'ltr' | 'rtl'
 
-  #file: File
+  #file: File | null
   #cb: EngineCallbacks
   #view!: FoliateView
   #container!: HTMLElement
@@ -100,6 +100,8 @@ export class EpubEngine implements ReaderEngine {
   #theme: ReaderTheme = themeById('paper')
   #annotations = new Map<string, Annotation>()
   #location?: FoliateRelocateDetail
+  /** the last position reported to the reader, also shown in the running header and footer */
+  #reported?: Relocation
   #docIndex = new WeakMap<Document, number>()
   #annotationClickAt = 0
   #pointerType = 'mouse'
@@ -116,11 +118,34 @@ export class EpubEngine implements ReaderEngine {
   #destroyed = false
   #bookTitle = ''
 
-  constructor(file: File, title: string, cb: EngineCallbacks) {
+  /** `file` may be null when a subclass provides the book through `loadBook()`. */
+  constructor(file: File | null, title: string, cb: EngineCallbacks) {
     this.#file = file
     this.#bookTitle = title
     this.#cb = cb
   }
+
+  // ---------------------------------------------------------------- hooks for generated books (flowing PDFs)
+  protected get view() {
+    return this.#view
+  }
+  protected get destroyed() {
+    return this.#destroyed
+  }
+  protected async loadBook(): Promise<File | FoliateBook> {
+    return this.#file!
+  }
+  /** Turns a stored locator into something foliate can navigate to. */
+  protected resolveTarget(target: string) {
+    return target
+  }
+  protected decorateRelocation(r: Relocation, _detail: FoliateRelocateDetail) {
+    return r
+  }
+  protected decorateSelection(s: SelectionInfo, _index: number | undefined, _range: Range) {
+    return s
+  }
+  protected onDocumentLoad(_doc: Document, _index: number) {}
 
   async open(container: HTMLElement, location?: string) {
     this.#container = container
@@ -128,7 +153,9 @@ export class EpubEngine implements ReaderEngine {
     view.className = 'foliate'
     container.append(view)
     this.#view = view
-    await view.open(this.#file)
+    const source = await this.loadBook()
+    if (this.#destroyed) return
+    await view.open(source)
     if (this.#destroyed) return
     const { book } = view
     const lang = book.metadata?.language
@@ -154,7 +181,7 @@ export class EpubEngine implements ReaderEngine {
     container.addEventListener('wheel', this.#onWheel, { passive: false })
 
     if (this.#settings) this.applySettings(this.#settings)
-    await view.init({ lastLocation: location || null, showTextStart: false })
+    await view.init({ lastLocation: location ? this.resolveTarget(location) : null, showTextStart: false })
     this.sectionFractions = view.getSectionFractions()
   }
 
@@ -178,7 +205,7 @@ export class EpubEngine implements ReaderEngine {
     else this.#view.prev()
   }
   async goTo(target: string) {
-    await this.#view.goTo(target)
+    await this.#view.goTo(this.resolveTarget(target))
   }
   async goToFraction(f: number) {
     await this.#view.goToFraction(f)
@@ -223,10 +250,10 @@ export class EpubEngine implements ReaderEngine {
     const heads = r.heads ?? []
     const feet = r.feet ?? []
     const show = this.#settings?.runningHeads !== false
-    const loc = this.#location
-    const chapter = loc?.tocItem?.label?.trim() ?? ''
-    const page = loc?.location ? `${loc.location.current + 1} / ${loc.location.total}` : ''
-    const mins = loc?.time ? Math.round(loc.time.section) : null
+    const loc = this.#reported
+    const chapter = loc?.chapter ?? ''
+    const page = loc?.page ? `${loc.page.current} / ${loc.page.total}` : ''
+    const mins = loc?.timeLeft?.chapter != null ? Math.round(loc.timeLeft.chapter) : null
     const left = mins == null ? '' : mins < 1 ? 'Less than a minute left in chapter' : `${mins} min left in chapter`
     if (heads.length > 1) {
       heads[0].textContent = show ? this.#bookTitle : ''
@@ -277,9 +304,15 @@ export class EpubEngine implements ReaderEngine {
       else if (!this.#mouseDown)
         this.#selectionTimer = setTimeout(() => this.#checkSelection(doc, false, true), 300)
     })
+    // Android only shows its floating text toolbar (Copy, Select all, Translate…) when
+    // the context menu goes ahead; it would cover the reader's own menus and popups
+    doc.addEventListener('contextmenu', e => {
+      if (this.#pointerType === 'touch') e.preventDefault()
+    })
     doc.addEventListener('click', e => this.#onClick(doc, e))
     doc.addEventListener('wheel', this.#onWheel, { passive: false })
     doc.addEventListener('mousemove', activity, { passive: true })
+    this.onDocumentLoad(doc, index)
   }
 
   #onClick(doc: Document, e: MouseEvent) {
@@ -339,7 +372,7 @@ export class EpubEngine implements ReaderEngine {
     if (onlyIfChanged && key === this.#lastSelection) return
     this.#lastSelection = key
     const isSingleWord = !/\s/.test(text) && text.length <= 48
-    this.#cb.onSelection({
+    this.#cb.onSelection(this.decorateSelection({
       text,
       rect: rectOf(range.getBoundingClientRect(), doc),
       locator,
@@ -348,7 +381,7 @@ export class EpubEngine implements ReaderEngine {
       fraction: this.#location?.fraction,
       isWord: isSingleWord && fromWordGesture,
       lookup,
-    })
+    }, index, range))
   }
 
   clearSelection() {
@@ -358,7 +391,6 @@ export class EpubEngine implements ReaderEngine {
 
   #onRelocate(detail: FoliateRelocateDetail) {
     this.#location = detail
-    this.#updateMarginals()
     let range: Relocation['range']
     const index = detail.section?.current
     if (detail.range && index != null) {
@@ -373,7 +405,7 @@ export class EpubEngine implements ReaderEngine {
     const page = detail.pageItem?.label
       ? { current: (detail.location?.current ?? 0) + 1, total: detail.location?.total ?? 0, label: detail.pageItem.label }
       : detail.location ? { current: detail.location.current + 1, total: detail.location.total } : undefined
-    this.#cb.onRelocate({
+    this.#reported = this.decorateRelocation({
       fraction: detail.fraction ?? 0,
       locator: detail.cfi,
       chapter: detail.tocItem?.label?.trim(),
@@ -382,7 +414,9 @@ export class EpubEngine implements ReaderEngine {
       timeLeft: detail.time ? { chapter: detail.time.section, book: detail.time.total } : undefined,
       range,
       excerpt: detail.range?.toString().replace(/\s+/g, ' ').trim().slice(0, 140),
-    })
+    }, detail)
+    this.#updateMarginals()
+    this.#cb.onRelocate(this.#reported)
   }
 
   // ---------------------------------------------------------------- annotations

@@ -6,15 +6,29 @@ export interface FoliateTocItem {
   subitems?: FoliateTocItem[] | null
 }
 
+export interface FoliateSection {
+  id?: string | number
+  linear?: string
+  size?: number
+  cfi?: string
+  /** URL of the section document */
+  load?: () => string | Promise<string>
+  unload?: () => void
+  createDocument?: () => Promise<Document>
+}
+
 export interface FoliateBook {
   metadata?: Record<string, any>
   toc?: FoliateTocItem[]
   pageList?: FoliateTocItem[]
-  sections: { id?: string; linear?: string; size?: number; cfi?: string; createDocument?: () => Promise<Document> }[]
+  sections: FoliateSection[]
   dir?: string
   rendition?: { layout?: string }
   getCover?: () => Promise<Blob | null> | Blob | null
-  resolveHref?: (href: string) => { index: number; anchor: (doc: Document) => Element | Range }
+  resolveHref?: (href: string) => { index: number; anchor: (doc: Document) => Element | Range | null }
+  /** section id and fragment of a TOC / page-list href */
+  splitTOCHref?: (href: string) => (string | number)[]
+  getTOCFragment?: (doc: Document, fragment: string) => Element | null
   isExternal?: (href: string) => boolean
   destroy?: () => void
 }
