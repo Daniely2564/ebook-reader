@@ -1,6 +1,6 @@
 import { App as CapApp } from '@capacitor/app'
 import { Capacitor, SystemBars, SystemBarsStyle } from '@capacitor/core'
-import { BookA, CircleCheck, CircleAlert, Info, Library as LibraryIcon, Settings, Star, Upload, X } from 'lucide-react'
+import { BookA, CircleCheck, CircleAlert, Highlighter, Info, Library as LibraryIcon, Settings, Star, Upload, X } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { BOOK_ACCEPT, formatOf, importBooks } from './lib/books'
 import { runBack } from './lib/back'
@@ -8,6 +8,7 @@ import { electron, isNative } from './lib/platform'
 import { useSettings } from './lib/settings'
 import { toast, useApp } from './lib/store'
 import { DictionaryPage } from './dictionary/DictionaryPage'
+import { Highlights } from './highlights/Highlights'
 import { Library } from './library/Library'
 import { Reader } from './reader/Reader'
 import { SettingsModal } from './settings/SettingsModal'
@@ -165,7 +166,7 @@ export const App = () => {
   return (
     <div className="app">
       {route.name === 'reader' ? (
-        <Reader key={route.bookId} bookId={route.bookId} target={route.target} />
+        <Reader key={route.bookId} bookId={route.bookId} target={route.target} from={route.from} />
       ) : (
         <div className="shell">
           <nav className="nav">
@@ -174,6 +175,7 @@ export const App = () => {
               <span>Lumen</span>
             </div>
             <button className={route.name === 'library' ? 'on' : ''} onClick={() => go({ name: 'library' })}><LibraryIcon size={20} /><span>Library</span></button>
+            <button className={route.name === 'highlights' ? 'on' : ''} onClick={() => go({ name: 'highlights' })}><Highlighter size={20} /><span>Highlights</span></button>
             <button className={route.name === 'vocab' ? 'on' : ''} onClick={() => go({ name: 'vocab' })}><Star size={20} /><span>Vocabulary</span></button>
             <button className={route.name === 'dictionary' ? 'on' : ''} onClick={() => go({ name: 'dictionary' })}><BookA size={20} /><span>Dictionary</span></button>
             <span className="nav-spacer" />
@@ -181,6 +183,7 @@ export const App = () => {
           </nav>
           <main className="main">
             {route.name === 'library' && <Library onImport={openImport} />}
+            {route.name === 'highlights' && <Highlights />}
             {route.name === 'vocab' && <Vocabulary />}
             {route.name === 'dictionary' && <DictionaryPage initial={route.word} />}
           </main>

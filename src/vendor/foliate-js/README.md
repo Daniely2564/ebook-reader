@@ -12,3 +12,5 @@ Local changes:
   after moving 10 px (not after a long press, and never while text is selected);
   `touchcancel` snaps back to a page; `pointercancel` ends a pointer selection;
   and the page no longer turns to follow a selection once the mouse is released.
+  In scrolled mode, the first scroll after going to a place the view was already
+  at (such as opening a book at its start) is reported as a relocation.

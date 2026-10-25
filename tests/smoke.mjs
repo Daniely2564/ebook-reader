@@ -2,7 +2,8 @@
 // End-to-end smoke test: builds a tiny EPUB, imports it into the production
 // build (served by `vite preview`), turns pages, looks up an inflected word
 // in the offline dictionary, checks that the dictionary picked stays picked,
-// and that reading progress is saved.
+// that turning the page closes the dictionary popup, that reading progress is
+// saved, and that a highlight shows up on the Highlights page and opens there.
 //
 //   npm run test:e2e            (set CHROMIUM_PATH to use a specific Chromium)
 import assert from 'node:assert/strict'
@@ -121,7 +122,16 @@ try {
   assert.match(await page.locator('.dict-pop .dict-body').innerText(), /wonder/i)
   step("looks up in Webster's 1913 (wondered → wonder)")
 
-  await page.keyboard.press('Escape')
+  // turning the page with the wheel (not just the keyboard) closes popups about the old page
+  const pop = await page.locator('.dict-pop').boundingBox()
+  const beforeWheel = await label()
+  await page.mouse.move(pop.x > 640 ? 200 : 1080, 420)
+  await page.mouse.wheel(0, 300)
+  await page.waitForFunction(prev => document.querySelector('.info-left')?.textContent !== prev, beforeWheel, { timeout: 10_000 })
+  await page.waitForSelector('.dict-pop', { state: 'detached', timeout: 5_000 })
+  step('closes the dictionary popup when the page turns')
+
+  await page.waitForTimeout(600) // let the page-turn animation settle
   const saved = await label()
   await page.evaluate(() => document.querySelector('[aria-label="Back to library"]').click())
   await page.waitForSelector('.continue')
@@ -130,6 +140,34 @@ try {
   await page.waitForFunction(s => document.querySelector('.info-left')?.textContent?.includes(s), saved, { timeout: 20_000 }).catch(() => {})
   assert.equal(await label(), saved)
   step('restores the reading position')
+
+  // highlight a word, read on, then open the highlight from the Highlights page
+  await page.waitForTimeout(600)
+  await lookUp('lanterns')
+  const highlightPage = await label()
+  await page.locator('.dict-pop .dict-hl-row .swatch').nth(2).click()
+  await page.waitForSelector('.dict-pop', { state: 'detached' })
+  for (let i = 0; i < 3; i++) {
+    const prev = await label()
+    await page.keyboard.press('ArrowRight')
+    await page.waitForFunction(p => document.querySelector('.info-left')?.textContent !== p, prev, { timeout: 10_000 })
+    await page.waitForTimeout(400)
+  }
+  const readTo = await label()
+  await page.evaluate(() => document.querySelector('[aria-label="Back to library"]').click())
+  await page.locator('.nav button', { hasText: 'Highlights' }).click()
+  await page.waitForSelector('.hl-card')
+  assert.equal(await page.locator('.hl-card').count(), 1)
+  assert.match(await page.locator('.hl-card .hl-quote').innerText(), /lanterns/)
+  assert.match(await page.locator('.hl-book-info').innerText(), /Smoke Test Book[\s\S]*1 highlight/)
+  step('lists the highlight on the Highlights page')
+
+  await page.locator('.hl-card .hl-where').click()
+  await page.waitForFunction(s => document.querySelector('.info-left')?.textContent === s, highlightPage, { timeout: 20_000 })
+  assert.match(await page.locator('.return-chip').innerText(), new RegExp(`Back to ${readTo}`))
+  await page.evaluate(() => document.querySelector('[aria-label="Back to highlights"]').click())
+  await page.waitForSelector('.hl-card')
+  step(`opens a highlight in the book (${highlightPage}, with a way back to ${readTo})`)
 
   assert.deepEqual(errors, [])
   step('no page errors')

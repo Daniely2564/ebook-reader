@@ -6,7 +6,7 @@ import { addReadingTime, deleteAnnotation, getAnnotations, getBook, getBookFile,
 import { formatMinutesLeft, percent } from '../lib/format'
 import { electron, isNative, modKey, openExternal, toggleFullscreen } from '../lib/platform'
 import { getSettings, useSettings, type Settings } from '../lib/settings'
-import { toast, useApp } from '../lib/store'
+import { toast, useApp, type Route } from '../lib/store'
 import { themeById } from '../lib/themes'
 import { speak, stopSpeaking, ttsAvailable } from '../lib/tts'
 import { useBackHandler } from '../lib/back'
@@ -41,7 +41,7 @@ const locationText = (loc: Relocation | null, kind?: ReaderEngine['kind']) => {
 
 type NoteTarget = { annotation: Annotation } | { draft: SelectionInfo; color: HighlightColor }
 
-export const Reader = ({ bookId, target }: { bookId: string; target?: string }) => {
+export const Reader = ({ bookId, target, from }: { bookId: string; target?: string; from?: Exclude<Route, { name: 'reader' }> }) => {
   const settings = useSettings()
   const go = useApp(s => s.go)
   const refreshLibrary = useApp(s => s.refreshLibrary)
@@ -121,6 +121,9 @@ export const Reader = ({ bookId, target }: { bookId: string; target?: string }) 
     }
     return closed
   }
+
+  const leave = () => go(from ?? { name: 'library' })
+  const leaveLabel = from?.name === 'highlights' ? 'Back to highlights' : 'Back to library'
 
   const goLeft = () => (engine?.dir === 'rtl' ? engine?.next() : engine?.prev())
   const goRight = () => (engine?.dir === 'rtl' ? engine?.prev() : engine?.next())
@@ -220,6 +223,13 @@ export const Reader = ({ bookId, target }: { bookId: string; target?: string }) 
   const handlers = useRef<EngineCallbacks>(null!)
   handlers.current = {
     onRelocate: r => {
+      // the page moved (wheel, swipe, slider, links, scrolling, read aloud…): popups
+      // pointing at text on the old page would float over unrelated text
+      if (locRef.current && locRef.current.locator !== r.locator) {
+        setSelection(null)
+        setLookup(null)
+        setActiveAnn(null)
+      }
       locRef.current = r
       lastActivity.current = Date.now()
       setLoc(r)
@@ -300,7 +310,7 @@ export const Reader = ({ bookId, target }: { bookId: string; target?: string }) 
       }
       if (cancelled) return
       eng.applySettings(getSettings())
-      const location = at ?? target ?? rec.location
+      const location = at ?? rec.location
       try {
         await eng.open(stageRef.current!, location)
       } catch (e) {
@@ -316,6 +326,14 @@ export const Reader = ({ bookId, target }: { bookId: string; target?: string }) 
         return
       }
       if (cancelled) return
+      // opened at a highlight (from the Highlights page): keep a way back to where reading left off
+      if (target && at == null) {
+        const reading = locRef.current
+        await eng.goTo(target)
+        if (cancelled) return
+        if (reading && reading.locator !== locRef.current?.locator)
+          setReturnTo({ locator: reading.locator, label: locationText(reading, eng.kind) || percent(reading.fraction) })
+      }
       const anns = await getAnnotations(bookId)
       if (cancelled) return
       setAnnotations(anns)
@@ -466,7 +484,7 @@ export const Reader = ({ bookId, target }: { bookId: string; target?: string }) 
 
   const anyOverlay = !!(lookup || selection || activeAnn || typo || panel.open)
   useBackHandler(() => closeOverlays(), anyOverlay)
-  useBackHandler(() => go({ name: 'library' }))
+  useBackHandler(leave)
 
   // ---------------------------------------------------------------- keyboard
   const onKeyRef = useRef<(e: KeyboardEvent) => void>(() => {})
@@ -559,7 +577,7 @@ export const Reader = ({ bookId, target }: { bookId: string; target?: string }) 
       <div className="reader-error" style={style}>
         <h2>Couldn’t open this book</h2>
         <p className="muted">{error}</p>
-        <Button variant="primary" onClick={() => go({ name: 'library' })}><ArrowLeft size={16} />Back to library</Button>
+        <Button variant="primary" onClick={leave}><ArrowLeft size={16} />{leaveLabel}</Button>
       </div>
     )
   }
@@ -609,7 +627,7 @@ export const Reader = ({ bookId, target }: { bookId: string; target?: string }) 
       )}
 
       <header className="reader-bar top">
-        <IconButton label="Back to library" onClick={() => go({ name: 'library' })}><ArrowLeft size={21} /></IconButton>
+        <IconButton label={leaveLabel} onClick={leave}><ArrowLeft size={21} /></IconButton>
         <div className="reader-title">
           <div className="t1">{book?.title}</div>
           {chapterLabel && <div className="t2">{chapterLabel}</div>}

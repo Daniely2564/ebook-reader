@@ -934,6 +934,9 @@ export class Paginator extends HTMLElement {
             this.#allowedScroll = offset
             this.#scrollBounds = [offset, this.atStart ? 0 : size, this.atEnd ? 0 : size]
             this.#afterScroll(reason)
+            // [Lumen] nothing scrolled, so no scroll event will come to clear the
+            // flag; otherwise the reader's first scroll is not reported
+            this.#justAnchored = false
             return
         }
         // FIXME: vertical-rl only, not -lr

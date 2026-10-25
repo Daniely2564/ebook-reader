@@ -7,6 +7,7 @@ export interface Settings {
   librarySort: 'recent' | 'added' | 'title' | 'author' | 'progress'
   libraryView: 'grid' | 'list'
   libraryFilter: 'all' | 'reading' | 'unread' | 'finished'
+  highlightsGroup: 'book' | 'recent'
 
   // reflowable text
   theme: string
@@ -62,6 +63,7 @@ export const DEFAULT_SETTINGS: Settings = {
   librarySort: 'recent',
   libraryView: 'grid',
   libraryFilter: 'all',
+  highlightsGroup: 'book',
 
   theme: 'paper',
   font: 'literata',

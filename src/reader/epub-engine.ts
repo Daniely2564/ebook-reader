@@ -390,6 +390,8 @@ export class EpubEngine implements ReaderEngine {
   }
 
   #onRelocate(detail: FoliateRelocateDetail) {
+    // a footnote popup points at a link on the page it was opened from
+    if (this.#location && detail.cfi !== this.#location.cfi) this.#hideFootnote()
     this.#location = detail
     let range: Relocation['range']
     const index = detail.section?.current

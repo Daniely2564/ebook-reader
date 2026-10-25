@@ -39,6 +39,7 @@ A calm, fast ebook reader for **desktop (Electron)** and **Android (Capacitor)**
 
 **Notes and more**
 - Highlights in 5 colors with notes, bookmarks, a Notes panel, and Markdown export.
+- **Highlights** page: every highlight and note from all your books in one place, by book (in reading order) or by date, with search, color and book filters, and one click to jump back to the passage.
 - **Read aloud** with sentence highlighting and automatic page turns (Web Speech on desktop, the native TTS engine on Android).
 - Reading time and daily streak, "Continue reading", library search, filters, sort, and grid or list view.
 - Backup and restore of progress, highlights, vocabulary and stats as JSON.

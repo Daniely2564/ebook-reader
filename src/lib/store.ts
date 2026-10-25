@@ -2,9 +2,11 @@ import { create } from 'zustand'
 
 export type Route =
   | { name: 'library' }
+  | { name: 'highlights' }
   | { name: 'vocab' }
   | { name: 'dictionary'; word?: string }
-  | { name: 'reader'; bookId: string; target?: string }
+  /** `target`: a place to show instead of the reading position; `from`: the page to go back to */
+  | { name: 'reader'; bookId: string; target?: string; from?: Exclude<Route, { name: 'reader' }> }
 
 export interface Toast {
   id: number
