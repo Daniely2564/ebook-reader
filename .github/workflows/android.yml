@@ -1,0 +1,77 @@
+name: Android APK
+
+# Builds the Android app and uploads the APKs as a downloadable artifact. Start it from the Actions
+# tab ("Run workflow") for any branch; the Build workflow also runs it after the tests on every push.
+on:
+  workflow_dispatch:
+  workflow_call:
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    env:
+      # Optional release signing (README, "Android"). One key for every build lets a new APK install
+      # over the last one; without it only a debug APK is built, signed with a key made for this run.
+      KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+      LUMEN_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+      LUMEN_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+      LUMEN_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+          cache: gradle
+      - uses: android-actions/setup-android@v3
+        with:
+          # the default also installs "tools", which current SDK repositories no longer have
+          packages: platform-tools
+      - run: npm ci
+      - run: npm run build
+        env:
+          # optional: Google Drive sync sign-in (an OAuth client for "TVs and Limited Input devices")
+          VITE_GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
+          VITE_GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
+      - run: npx cap sync android
+      - name: Decode signing key
+        if: env.KEYSTORE_BASE64 != ''
+        run: |
+          echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.keystore"
+          echo "LUMEN_KEYSTORE=$RUNNER_TEMP/release.keystore" >> "$GITHUB_ENV"
+      - name: Build APKs
+        working-directory: android
+        # an unsigned release APK can't be installed, so it is only built with the signing key
+        run: ./gradlew assembleDebug ${LUMEN_KEYSTORE:+assembleRelease} --no-daemon
+      - name: Name the APKs
+        run: |
+          out="$RUNNER_TEMP/apk"
+          name="lumen-reader-$(node -p "require('./package.json').version")-$GITHUB_RUN_NUMBER"
+          apks=android/app/build/outputs/apk
+          mkdir -p "$out"
+          cp "$apks/debug/app-debug.apk" "$out/$name-debug.apk"
+          [ -f "$apks/release/app-release.apk" ] && cp "$apks/release/app-release.apk" "$out/$name.apk"
+          {
+            echo "### Android APK"
+            echo
+            echo "Download **lumen-reader-android** under *Artifacts* below: a zip with"
+            echo
+            for f in "$out"/*.apk; do
+              size=$(du -m "$f" | cut -f1)
+              case "$f" in
+                *-debug.apk) note="debug build, signed with a key made for this run: uninstall other Lumen builds before installing it" ;;
+                *) note="release build, signed with your key: installs over earlier releases" ;;
+              esac
+              echo "- \`$(basename "$f")\` ($size MB): $note"
+            done
+            [ -n "$LUMEN_KEYSTORE" ] || { echo; echo "Add the ANDROID_KEYSTORE_* secrets (README, \"Android\") to also get a release APK that updates in place."; }
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lumen-reader-android
+          path: ${{ runner.temp }}/apk/*.apk
+          if-no-files-found: error

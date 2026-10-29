@@ -71,7 +71,7 @@ The packages register file associations for `.epub`, `.pdf`, `.mobi/.azw3`, `.fb
 
 ### Android
 
-Requirements: JDK 21 and the Android SDK (Android Studio installs both). Set `ANDROID_HOME` if Gradle can't find the SDK.
+Requirements: JDK 21 and the Android SDK (Android Studio installs both). Set `ANDROID_HOME` if Gradle can't find the SDK. `npm run android:apk` uses `JAVA_HOME` when it is a JDK 21, and otherwise finds one where JDKs (or Android Studio's bundled one) are usually installed.
 
 ```bash
 npm run android:apk        # build web app → sync → android/app/build/outputs/apk/debug/app-debug.apk
@@ -79,6 +79,21 @@ npm run android:open       # open the project in Android Studio
 ```
 
 For a signed release build, set `LUMEN_KEYSTORE`, `LUMEN_KEYSTORE_PASSWORD`, `LUMEN_KEY_ALIAS` and `LUMEN_KEY_PASSWORD`, then run `npm run android:release`. The app registers as a handler for ebook and PDF files ("Open with Lumen Reader"), keeps the screen on while reading, and hides the system bars in the reader.
+
+#### Download the APK from GitHub Actions
+
+Every push to `main` builds the APK (the Build workflow), and **Actions → Android APK → Run workflow** builds one for any branch. Open the run and download **lumen-reader-android** under *Artifacts*: a zip with
+
+- `lumen-reader-<version>-<run>.apk`, a release build signed with your key (only when the signing secrets below are set). Each one installs over the last, keeping your library.
+- `lumen-reader-<version>-<run>-debug.apk`, a debug build. Its key is made for that run, so uninstall other Lumen builds before installing it.
+
+To get the release APK, create a signing key once (keep the file and its password safe and out of the repository: APKs signed with another key can't update the app):
+
+```bash
+keytool -genkeypair -v -keystore lumen-release.jks -alias lumen -keyalg RSA -keysize 2048 -validity 10000
+```
+
+Then add these repository secrets (**Settings → Secrets and variables → Actions**): `ANDROID_KEYSTORE_BASE64`, the file in base64 (`base64 -w0 lumen-release.jks` on Linux, `base64 -i lumen-release.jks` on macOS, `[Convert]::ToBase64String([IO.File]::ReadAllBytes("lumen-release.jks"))` in PowerShell); `ANDROID_KEYSTORE_PASSWORD`; `ANDROID_KEY_ALIAS` (`lumen`); and `ANDROID_KEY_PASSWORD` if the key's password differs from the keystore's.
 
 ### Sync with Google Drive
 
@@ -111,7 +126,7 @@ Highlights already on the page (as quotes) are skipped, so sending again is safe
 
 ### Continuous integration
 
-`.github/workflows/build.yml` type-checks the code, runs the end-to-end tests, then builds Linux/Windows/macOS packages and Android APKs as workflow artifacts. Add the `ANDROID_KEYSTORE_BASE64`, `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS` and `ANDROID_KEY_PASSWORD` secrets to get a signed release APK, and `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` to build in Google Drive sign-in.
+`.github/workflows/build.yml` type-checks the code, runs the end-to-end tests, then builds Linux/Windows/macOS packages and the Android APKs (`.github/workflows/android.yml`, which can also be run on its own) as workflow artifacts. Add the `ANDROID_KEYSTORE_*` secrets to get a signed release APK (see *Download the APK from GitHub Actions*), and `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` to build in Google Drive sign-in.
 
 ### Tests
 

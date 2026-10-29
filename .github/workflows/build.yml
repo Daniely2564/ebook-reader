@@ -62,43 +62,5 @@ jobs:
 
   android:
     needs: test
-    runs-on: ubuntu-latest
-    env:
-      # optional release signing: add these repository secrets to get a signed release APK
-      KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
-      LUMEN_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
-      LUMEN_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
-      LUMEN_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-      - uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: 21
-      - uses: android-actions/setup-android@v3
-        with:
-          # the default also installs "tools", which current SDK repositories no longer have
-          packages: platform-tools
-      - run: npm ci
-      - run: npm run build
-        env:
-          VITE_GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
-          VITE_GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
-      - run: npx cap sync android
-      - name: Decode signing key
-        if: env.KEYSTORE_BASE64 != ''
-        run: |
-          echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.keystore"
-          echo "LUMEN_KEYSTORE=$RUNNER_TEMP/release.keystore" >> "$GITHUB_ENV"
-      - name: Build APKs
-        working-directory: android
-        run: ./gradlew assembleDebug assembleRelease --no-daemon
-      - uses: actions/upload-artifact@v4
-        with:
-          name: lumen-reader-android
-          path: android/app/build/outputs/apk/**/*.apk
-          if-no-files-found: error
+    uses: ./.github/workflows/android.yml
+    secrets: inherit
