@@ -167,6 +167,7 @@
 .hl-book-info h2 button:hover { color: var(--accent); }
 .hl-book-actions { display: flex; align-items: center; gap: 4px; }
 .hl-book-actions .icon-btn { color: var(--muted); }
+.hl-away { display: flex; align-items: center; gap: 5px; margin-top: 2px; }
 
 .hl-list, .hl-entry, .hl-day { display: grid; grid-template-columns: minmax(0, 1fr); align-content: start; gap: 14px; min-width: 0; }
 .hl-list { max-width: 780px; }

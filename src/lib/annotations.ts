@@ -24,7 +24,7 @@ export const sortAnnotations = (list: Annotation[], format: BookRecord['format']
   }
 })
 
-export const annotationsToMarkdown = (book: BookRecord, list: Annotation[]) => {
+export const annotationsToMarkdown = (book: Pick<BookRecord, 'title' | 'author' | 'format'>, list: Annotation[]) => {
   const lines = [`# ${book.title}`, '']
   if (book.author) lines.push(`*${book.author}*`, '')
   let chapter: string | undefined

@@ -19,11 +19,12 @@ export const Vocabulary = () => {
   const [query, setQuery] = useState('')
   const [review, setReview] = useState(false)
   const go = useApp(s => s.go)
+  const syncVersion = useApp(s => s.syncVersion)
 
   const load = () => getVocab().then(setList).catch(() => setList([]))
   useEffect(() => {
     load()
-  }, [])
+  }, [syncVersion])
 
   const shown = useMemo(() => {
     const q = query.trim().toLowerCase()

@@ -6,6 +6,7 @@ import { useSettings, type Settings } from '../lib/settings'
 import { toast, useApp } from '../lib/store'
 import { annotationsToMarkdown } from '../lib/annotations'
 import { exportFile } from '../lib/platform'
+import { isSyncOn } from '../lib/sync'
 import { Button, Empty, IconButton, Menu, Segmented, Sheet, Spinner } from '../components/ui'
 import { BookCover, forgetCover } from './BookCover'
 import { useBooks, useReadingStats } from './useLibrary'
@@ -17,6 +18,9 @@ const SORTS: { value: Settings['librarySort']; label: string }[] = [
   { value: 'author', label: 'Author' },
   { value: 'progress', label: 'Progress' },
 ]
+
+/** time read on this device and your other ones */
+const readTime = (b: BookRecord) => b.readingTime + (b.otherReadingTime ?? 0)
 
 const statusOf = (b: BookRecord) => b.finished ? 'finished' : b.progress > 0.001 || b.lastReadAt ? 'reading' : 'unread'
 
@@ -62,8 +66,12 @@ export const Library = ({ onImport }: { onImport: () => void }) => {
   const open = (b: BookRecord) => go({ name: 'reader', bookId: b.id })
 
   const remove = async (b: BookRecord) => {
-    if (!confirm(`Remove “${b.title}” from your library? Highlights and notes for this book will be deleted too.`)) return
-    await deleteBook(b.id)
+    // with sync on, the book's highlights stay: they're still on your other devices and come back with the book
+    const keepNotes = isSyncOn()
+    if (!confirm(keepNotes
+      ? `Remove “${b.title}” from this device? Its highlights and notes stay in sync and come back if you add the book again.`
+      : `Remove “${b.title}” from your library? Highlights and notes for this book will be deleted too.`)) return
+    await deleteBook(b.id, keepNotes)
     forgetCover(b.id)
     setDetails(null)
     refresh()
@@ -135,7 +143,7 @@ export const Library = ({ onImport }: { onImport: () => void }) => {
                 <div className="muted small">
                   {current.locationLabel && <>{current.locationLabel} · </>}
                   {formatRelative(current.lastReadAt)}
-                  {current.readingTime > 60000 && <> · read for {formatDuration(current.readingTime)}</>}
+                  {readTime(current) > 60000 && <> · read for {formatDuration(readTime(current))}</>}
                 </div>
               </div>
               <Button variant="primary" className="continue-btn" tabIndex={-1}><Play size={16} />Resume</Button>
@@ -216,7 +224,7 @@ const BookDetails = ({ book, onClose, onRemove, onOpen }: {
     ['Added', new Date(book.addedAt).toLocaleDateString()],
     ['Last read', book.lastReadAt ? formatRelative(book.lastReadAt) : 'Never'],
     ['Progress', book.finished ? 'Finished' : percent(book.progress)],
-    ['Reading time', formatDuration(book.readingTime)],
+    ['Reading time', formatDuration(readTime(book))],
   ]
   return (
     <Sheet open onClose={onClose} title="Book details">

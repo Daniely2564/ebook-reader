@@ -42,8 +42,9 @@ A calm, fast ebook reader for **desktop (Electron)** and **Android (Capacitor)**
 - **Highlights** page: every highlight and note from all your books in one place, by book (in reading order) or by date, with search, color and book filters, and one click to jump back to the passage.
 - **Read aloud** with sentence highlighting and automatic page turns (Web Speech on desktop, the native TTS engine on Android).
 - Reading time and daily streak, "Continue reading", library search, filters, sort, and grid or list view.
+- **Sync with Google Drive**: highlights, notes, bookmarks, vocabulary, reading positions and reading time stay the same on all your devices (desktop, Android, web), with an optional Markdown copy of each book's highlights in Drive to read in any app.
 - Backup and restore of progress, highlights, vocabulary and stats as JSON.
-- Everything stays on the device (IndexedDB). No account or tracking.
+- Everything stays on the device (IndexedDB) unless you turn on sync. No account or tracking.
 
 ## Getting started
 
@@ -78,15 +79,36 @@ npm run android:open       # open the project in Android Studio
 
 For a signed release build, set `LUMEN_KEYSTORE`, `LUMEN_KEYSTORE_PASSWORD`, `LUMEN_KEY_ALIAS` and `LUMEN_KEY_PASSWORD`, then run `npm run android:release`. The app registers as a handler for ebook and PDF files ("Open with Lumen Reader"), keeps the screen on while reading, and hides the system bars in the reader.
 
+### Sync with Google Drive
+
+**Settings → Sync** keeps highlights, notes, bookmarks, vocabulary, reading positions and reading time in step across your devices through a "Lumen Reader" folder in your Google Drive. Lumen asks only for the `drive.file` scope, so it can see the files it creates there and nothing else. Each device connects once by entering a code at google.com/device. With **Save highlights as Markdown files** on, `Lumen Reader/Highlights` also gets one readable `.md` file per book, so your notes can be opened in Drive, Docs or a notes app.
+
+Signing in needs a (free) Google OAuth client of your own:
+
+1. In the [Google Cloud console](https://console.cloud.google.com/), create a project and enable the **Google Drive API**.
+2. Under **Google Auth Platform**, set up the consent screen (audience *External*) and **publish** it. While it is in *Testing*, Google ends sign-ins after 7 days. `drive.file` needs no app verification.
+3. Under **Clients**, create an OAuth client of type **TVs and Limited Input devices**.
+4. Build it in with a git-ignored `.env.local` file (for CI builds, add `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` repository secrets instead):
+
+   ```ini
+   VITE_GOOGLE_CLIENT_ID=1234-abc.apps.googleusercontent.com
+   VITE_GOOGLE_CLIENT_SECRET=GOCSPX-...
+   ```
+
+   Or leave it out of the build and paste the client ID and secret into Settings → Sync on each device. Google treats an installed app's client secret as public: it identifies the app and doesn't protect your data.
+
+How it merges: each device combines its data with the copy in Drive. The newest edit of each highlight or note wins, deletions are remembered so they reach every device, a book's position follows the device that last turned a page (an open book offers to jump there), and reading time is counted per device and added up. Book files are not uploaded: add the same file on another device and it opens where you left off. Highlights of books that aren't on a device still show on its Highlights page. Removing a book while sync is on keeps its highlights.
+
 ### Continuous integration
 
-`.github/workflows/build.yml` type-checks the code, runs the end-to-end smoke test, then builds Linux/Windows/macOS packages and Android APKs as workflow artifacts. Add the `ANDROID_KEYSTORE_BASE64`, `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS` and `ANDROID_KEY_PASSWORD` secrets to get a signed release APK.
+`.github/workflows/build.yml` type-checks the code, runs the end-to-end tests, then builds Linux/Windows/macOS packages and Android APKs as workflow artifacts. Add the `ANDROID_KEYSTORE_BASE64`, `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS` and `ANDROID_KEY_PASSWORD` secrets to get a signed release APK, and `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` to build in Google Drive sign-in.
 
 ### Tests
 
 ```bash
 npm run typecheck
-npm run test:e2e   # builds, serves the app and drives it in Chromium (set CHROMIUM_PATH if needed)
+npm run test:e2e   # builds, serves the app and drives it in Chromium (set CHROMIUM_PATH if needed);
+                   # the sync test runs two devices against a fake Google Drive
 ```
 
 ## Before you publish
@@ -122,8 +144,11 @@ src/
   dictionary/              dictionary card and Dictionary page
   lib/dictionary/          Wiktionary + WordNet lookup and lemmatizer, StarDict reader, online sources, sanitizer
   lib/db.ts                IndexedDB storage (books, files, annotations, vocabulary, stats)
+  lib/sync/                Google Drive sync: merge rules, sign-in and Drive calls, scheduling
+  settings/                Settings, including Sync
   vendor/foliate-js/       vendored foliate-js (MIT)
 tests/smoke.mjs            end-to-end test
+tests/sync.mjs             end-to-end sync test (two devices, fake Google Drive)
 ```
 
 ## Licenses

@@ -1,4 +1,4 @@
-import { ArrowUpRight, BookOpen, Copy, Download, Highlighter, NotebookPen, Palette, Search, Trash, X } from 'lucide-react'
+import { ArrowUpRight, BookOpen, CloudOff, Copy, Download, Highlighter, NotebookPen, Palette, Search, Trash, X } from 'lucide-react'
 import { useEffect, useLayoutEffect, useMemo, useState } from 'react'
 import { deleteAnnotation, getAllAnnotations, getBooks, putAnnotation, type Annotation, type BookRecord, type HighlightColor } from '../lib/db'
 import { annotationsToMarkdown, sortAnnotations } from '../lib/annotations'
@@ -6,6 +6,7 @@ import { formatRelative, percent, safeFileName } from '../lib/format'
 import { exportFile } from '../lib/platform'
 import { useSettings } from '../lib/settings'
 import { toast, useApp } from '../lib/store'
+import { getSyncedBooks } from '../lib/sync/local'
 import { HIGHLIGHT_COLORS } from '../lib/themes'
 import { Button, Empty, IconButton, Menu, Segmented, Spinner } from '../components/ui'
 import { BookCover } from '../library/BookCover'
@@ -50,19 +51,31 @@ export const Highlights = () => {
   const [filter, setFilter] = useState<Filter>('all')
   const [bookId, setBookId] = useState('all')
   const [noteFor, setNoteFor] = useState<Annotation | null>(null)
+  /** synced books that are not on this device */
+  const [away, setAway] = useState<Set<string>>(new Set())
+  const syncVersion = useApp(s => s.syncVersion)
 
   useEffect(() => {
     let alive = true
-    Promise.all([getBooks(), getAllAnnotations()]).then(([b, anns]) => {
+    Promise.all([getBooks(), getAllAnnotations(), getSyncedBooks()]).then(([b, anns, synced]) => {
       if (!alive) return
       const map = new Map(b.map(x => [x.id, x]))
+      const missing = new Set<string>()
+      for (const a of anns) {
+        const s = !map.has(a.bookId) && synced.get(a.bookId)
+        if (s) {
+          map.set(a.bookId, s)
+          missing.add(a.bookId)
+        }
+      }
       setList(anns.filter(a => a.kind === 'highlight' && map.has(a.bookId)))
       setBooks(map)
+      setAway(missing)
     }).catch(() => alive && setBooks(new Map()))
     return () => {
       alive = false
     }
-  }, [])
+  }, [syncVersion])
 
   useLayoutEffect(() => {
     if (!books || !returnScroll) return
@@ -130,6 +143,10 @@ export const Highlights = () => {
   if (!books) return <div className="page-center"><Spinner /></div>
 
   const openBook = (book: BookRecord, a?: Annotation) => {
+    if (away.has(book.id)) {
+      toast(`“${book.title}” isn’t on this device. Add the book to your library to open it here.`)
+      return
+    }
     returnScroll = document.querySelector('.main')?.scrollTop ?? 0
     go({ name: 'reader', bookId: book.id, target: a?.locator, from: { name: 'highlights' } })
   }
@@ -146,8 +163,10 @@ export const Highlights = () => {
     toast('Highlight deleted', 'info', {
       label: 'Undo',
       run: async () => {
-        await putAnnotation(a)
-        setList(l => [...l, a])
+        // newer than the deletion, which may have synced already
+        const back = { ...a, updatedAt: Date.now() }
+        await putAnnotation(back)
+        setList(l => [...l, back])
       },
     })
   }
@@ -251,9 +270,14 @@ export const Highlights = () => {
                     <h2><button onClick={() => openBook(g.book)}>{g.book.title}</button></h2>
                     {g.book.author && <div className="muted small">{g.book.author}</div>}
                     <div className="muted small">{plural(g.items.length, 'highlight')}{notes ? ` · ${plural(notes, 'note')}` : ''}</div>
+                    {away.has(g.book.id) && (
+                      <div className="hl-away muted small" title="Synced from another device. Add the book here to open it.">
+                        <CloudOff size={13} />Not on this device
+                      </div>
+                    )}
                   </div>
                   <div className="hl-book-actions">
-                    <Button onClick={() => openBook(g.book)}><BookOpen size={16} />{g.book.progress > 0 ? 'Continue' : 'Read'}</Button>
+                    {!away.has(g.book.id) && <Button onClick={() => openBook(g.book)}><BookOpen size={16} />{g.book.progress > 0 ? 'Continue' : 'Read'}</Button>}
                     <IconButton label="Export as Markdown" onClick={() => exportGroups([g])}><Download size={17} /></IconButton>
                   </div>
                 </aside>

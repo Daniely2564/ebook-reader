@@ -16,13 +16,20 @@ export interface BookRecord {
   /** CFI for reflowable books, `pdf:<page>` for PDFs */
   location?: string
   locationLabel?: string
+  /** when the reader last moved the position (not just reopened at it); the newest one wins across devices */
+  positionAt?: number
   finished?: boolean
+  /** when `finished` was last set or cleared */
+  finishedAt?: number
   cover?: Blob
   language?: string
   publisher?: string
   description?: string
   pageCount?: number
+  /** reading time on this device */
   readingTime: number
+  /** reading time on your other devices, from sync */
+  otherReadingTime?: number
   /** Per-book view state (PDF zoom etc.) */
   view?: Record<string, unknown>
 }
@@ -78,23 +85,49 @@ interface LumenDB extends DBSchema {
   annotations: { key: string; value: Annotation; indexes: { 'by-book': string } }
   vocab: { key: string; value: VocabEntry; indexes: { 'by-date': number } }
   dicts: { key: string; value: UserDictRecord }
+  /** reading time per day on this device */
   stats: { key: string; value: { date: string; ms: number } }
+  /** deleted annotations (`a:<id>`) and vocabulary (`v:<id>`), so deletions reach other devices */
+  tombstones: { key: string; value: { id: string; deletedAt: number } }
+  /** sync state */
+  meta: { key: string; value: any }
 }
 
 let dbPromise: Promise<IDBPDatabase<LumenDB>> | null = null
 
-export const db = () => dbPromise ??= openDB<LumenDB>('lumen-reader', 1, {
-  upgrade(d) {
-    d.createObjectStore('books', { keyPath: 'id' })
-    d.createObjectStore('files', { keyPath: 'id' })
-    d.createObjectStore('annotations', { keyPath: 'id' }).createIndex('by-book', 'bookId')
-    d.createObjectStore('vocab', { keyPath: 'id' }).createIndex('by-date', 'createdAt')
-    d.createObjectStore('dicts', { keyPath: 'id' })
-    d.createObjectStore('stats', { keyPath: 'date' })
+export const db = () => dbPromise ??= openDB<LumenDB>('lumen-reader', 2, {
+  upgrade(d, oldVersion) {
+    if (oldVersion < 1) {
+      d.createObjectStore('books', { keyPath: 'id' })
+      d.createObjectStore('files', { keyPath: 'id' })
+      d.createObjectStore('annotations', { keyPath: 'id' }).createIndex('by-book', 'bookId')
+      d.createObjectStore('vocab', { keyPath: 'id' }).createIndex('by-date', 'createdAt')
+      d.createObjectStore('dicts', { keyPath: 'id' })
+      d.createObjectStore('stats', { keyPath: 'date' })
+    }
+    if (oldVersion < 2) {
+      d.createObjectStore('tombstones', { keyPath: 'id' })
+      d.createObjectStore('meta')
+    }
   },
 })
 
 export const uid = () => crypto.randomUUID?.() ?? `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`
+
+// ---------------------------------------------------------------- change notifications
+/** `edit`: highlights, notes, vocabulary or books changed; `position`: a reading position moved */
+export type LocalChange = 'edit' | 'position'
+const changeListeners = new Set<(kind: LocalChange) => void>()
+export const onLocalChange = (cb: (kind: LocalChange) => void) => {
+  changeListeners.add(cb)
+  return () => {
+    changeListeners.delete(cb)
+  }
+}
+const changed = (kind: LocalChange) => changeListeners.forEach(cb => cb(kind))
+
+export const getMeta = async <T>(key: string): Promise<T | undefined> => (await db()).get('meta', key)
+export const setMeta = async (key: string, value: unknown) => { await (await db()).put('meta', value, key) }
 
 // ---------------------------------------------------------------- books
 export const getBooks = async () => (await db()).getAll('books')
@@ -102,12 +135,20 @@ export const getBook = async (id: string) => (await db()).get('books', id)
 export const putBook = async (book: BookRecord) => { await (await db()).put('books', book) }
 export const getBookFile = async (id: string) => (await (await db()).get('files', id))?.blob
 
+/** Pass `positionAt` with a location the reader moved to; `finishedAt` is set when `finished` changes. */
 export const updateBook = async (id: string, patch: Partial<BookRecord> | ((b: BookRecord) => Partial<BookRecord>)) => {
   const d = await db()
   const tx = d.transaction('books', 'readwrite')
   const book = await tx.store.get(id)
-  if (book) await tx.store.put({ ...book, ...(typeof patch === 'function' ? patch(book) : patch) })
+  let synced = false
+  if (book) {
+    const p = typeof patch === 'function' ? patch(book) : patch
+    const finishedAt = 'finished' in p && !!p.finished !== !!book.finished ? { finishedAt: Date.now() } : {}
+    await tx.store.put({ ...book, ...p, ...finishedAt })
+    synced = 'location' in p || 'progress' in p || 'finished' in p
+  }
   await tx.done
+  if (synced) changed('position')
 }
 
 export const addBook = async (book: BookRecord, blob: Blob) => {
@@ -116,15 +157,19 @@ export const addBook = async (book: BookRecord, blob: Blob) => {
   await tx.objectStore('files').put({ id: book.id, blob })
   await tx.objectStore('books').put(book)
   await tx.done
+  changed('edit')
 }
 
-export const deleteBook = async (id: string) => {
+/** `keepNotes`: leave the book's highlights and bookmarks (synced ones come back anyway). */
+export const deleteBook = async (id: string, keepNotes = false) => {
   const d = await db()
   const tx = d.transaction(['books', 'files', 'annotations'], 'readwrite')
   await tx.objectStore('books').delete(id)
   await tx.objectStore('files').delete(id)
-  const idx = tx.objectStore('annotations').index('by-book')
-  for (const key of await idx.getAllKeys(id)) await tx.objectStore('annotations').delete(key)
+  if (!keepNotes) {
+    const idx = tx.objectStore('annotations').index('by-book')
+    for (const key of await idx.getAllKeys(id)) await tx.objectStore('annotations').delete(key)
+  }
   await tx.done
 }
 
@@ -132,13 +177,37 @@ export const deleteBook = async (id: string) => {
 export const getAnnotations = async (bookId: string) =>
   (await db()).getAllFromIndex('annotations', 'by-book', bookId)
 export const getAllAnnotations = async () => (await db()).getAll('annotations')
-export const putAnnotation = async (a: Annotation) => { await (await db()).put('annotations', a) }
-export const deleteAnnotation = async (id: string) => { await (await db()).delete('annotations', id) }
+export const putAnnotation = async (a: Annotation) => {
+  const tx = (await db()).transaction(['annotations', 'tombstones'], 'readwrite')
+  await tx.objectStore('annotations').put(a)
+  await tx.objectStore('tombstones').delete(`a:${a.id}`)
+  await tx.done
+  changed('edit')
+}
+export const deleteAnnotation = async (id: string) => {
+  const tx = (await db()).transaction(['annotations', 'tombstones'], 'readwrite')
+  await tx.objectStore('annotations').delete(id)
+  await tx.objectStore('tombstones').put({ id: `a:${id}`, deletedAt: Date.now() })
+  await tx.done
+  changed('edit')
+}
 
 // ---------------------------------------------------------------- vocabulary
 export const getVocab = async () => (await (await db()).getAllFromIndex('vocab', 'by-date')).reverse()
-export const putVocab = async (v: VocabEntry) => { await (await db()).put('vocab', v) }
-export const deleteVocab = async (id: string) => { await (await db()).delete('vocab', id) }
+export const putVocab = async (v: VocabEntry) => {
+  const tx = (await db()).transaction(['vocab', 'tombstones'], 'readwrite')
+  await tx.objectStore('vocab').put(v)
+  await tx.objectStore('tombstones').delete(`v:${v.id}`)
+  await tx.done
+  changed('edit')
+}
+export const deleteVocab = async (id: string) => {
+  const tx = (await db()).transaction(['vocab', 'tombstones'], 'readwrite')
+  await tx.objectStore('vocab').delete(id)
+  await tx.objectStore('tombstones').put({ id: `v:${id}`, deletedAt: Date.now() })
+  await tx.done
+  changed('edit')
+}
 
 // ---------------------------------------------------------------- user dictionaries
 export const getUserDicts = async () => (await (await db()).getAll('dicts')).sort((a, b) => a.order - b.order)
@@ -160,7 +229,14 @@ export const addReadingTime = async (bookId: string, ms: number) => {
   await tx.done
 }
 
-export const getStats = async () => (await db()).getAll('stats')
+/** Reading time per day, on this device and (from sync) your other ones. */
+export const getStats = async () => {
+  const own = await (await db()).getAll('stats')
+  const others = await getMeta<Record<string, number>>('otherStats') ?? {}
+  const all = new Map(Object.entries(others))
+  for (const s of own) all.set(s.date, (all.get(s.date) ?? 0) + s.ms)
+  return [...all].map(([date, ms]) => ({ date, ms }))
+}
 
 // ---------------------------------------------------------------- backup
 export interface Backup {
@@ -207,5 +283,6 @@ export const importBackup = async (data: Backup) => {
     await tx.objectStore('stats').put({ date: s.date, ms: Math.max(cur?.ms ?? 0, s.ms) })
   }
   await tx.done
+  changed('edit')
   return restored
 }

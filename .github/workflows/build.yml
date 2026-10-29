@@ -42,6 +42,10 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run build
+        env:
+          # optional: Google Drive sync sign-in (an OAuth client for "TVs and Limited Input devices")
+          VITE_GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
+          VITE_GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
       - run: npx electron-builder ${{ matrix.target }} --publish never
         env:
           # unsigned builds; add CSC_LINK / CSC_KEY_PASSWORD (and Apple notarization secrets) to sign
@@ -81,6 +85,9 @@ jobs:
           packages: platform-tools
       - run: npm ci
       - run: npm run build
+        env:
+          VITE_GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
+          VITE_GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
       - run: npx cap sync android
       - name: Decode signing key
         if: env.KEYSTORE_BASE64 != ''

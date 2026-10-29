@@ -373,6 +373,25 @@ input:focus-visible + .switch { outline: 2px solid var(--accent); outline-offset
 .about-brand h3 { font: 650 22px var(--font-serif); text-transform: none; letter-spacing: 0; color: var(--text); margin: 0; }
 .credits { padding-inline-start: 18px; color: var(--muted); font-size: 13.5px; display: grid; gap: 6px; }
 .credits b { color: var(--text); font-weight: 600; }
+.sync-card { display: flex; align-items: center; gap: 14px; padding: 14px 16px; color: var(--accent); }
+.sync-card-main { display: grid; min-width: 0; }
+.sync-card strong { color: var(--text); overflow-wrap: anywhere; }
+.sync-error { color: var(--danger); }
+.sync-code { padding: 16px 18px; }
+.sync-code p { margin: 0; }
+.sync-code-value { margin: 14px 0 4px; font: 650 30px ui-monospace, 'SF Mono', Menlo, Consolas, monospace; letter-spacing: .12em; color: var(--text); user-select: all; }
+.sync-wait { display: flex; align-items: center; gap: 8px; }
+.sync-setup { padding: 14px 18px; }
+.sync-setup p { margin: 0 0 6px; }
+.sync-setup ol { margin: 0 0 10px; padding-inline-start: 20px; display: grid; gap: 4px; color: var(--muted); }
+.sync-setup ol b { color: var(--text); font-weight: 600; }
+.sync-setup .link-btn { padding: 0; font-size: inherit; }
+.sync-field { display: grid; gap: 4px; margin: 8px 0; font-size: 13px; color: var(--muted); }
+.sync-field input {
+  height: 38px; min-width: 0; padding: 0 12px; border-radius: 10px; border: 1px solid var(--border);
+  background: var(--surface); color: var(--text); font: 13px ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+}
+.sync-field input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
 .shortcuts { display: grid; gap: 2px; margin: 0; }
 .shortcuts div { display: flex; justify-content: space-between; gap: 16px; padding: 7px 0; border-bottom: 1px solid var(--border); }
 .shortcuts dd { margin: 0; color: var(--muted); text-align: end; }

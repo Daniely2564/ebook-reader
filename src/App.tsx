@@ -7,6 +7,7 @@ import { runBack } from './lib/back'
 import { electron, isNative } from './lib/platform'
 import { useSettings } from './lib/settings'
 import { toast, useApp } from './lib/store'
+import { startSync } from './lib/sync'
 import { DictionaryPage } from './dictionary/DictionaryPage'
 import { Highlights } from './highlights/Highlights'
 import { Library } from './library/Library'
@@ -35,6 +36,8 @@ export const App = () => {
   const theme = useResolvedTheme()
   const fileInput = useRef<HTMLInputElement>(null)
   const [dragging, setDragging] = useState(false)
+
+  useEffect(startSync, [])
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme

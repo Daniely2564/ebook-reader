@@ -71,6 +71,11 @@ export const Reader = ({ bookId, target, from }: { bookId: string; target?: stri
   const lastActivity = useRef(Date.now())
   const locRef = useRef<Relocation | null>(null)
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  /** relocations before the book has opened restore the saved place; after that, the reader moved */
+  const opened = useRef(false)
+  const moved = useRef(false)
+  /** the newest reading position this session knows of, to notice one synced from another device */
+  const knownPosition = useRef(0)
   /** bumped to reopen the book in another view (PDF pages ↔ flowing text) */
   const [session, setSession] = useState(0)
   const reopenAt = useRef<string | null>(null)
@@ -83,13 +88,24 @@ export const Reader = ({ bookId, target, from }: { bookId: string; target?: stri
   const saveProgress = useCallback((r: Relocation | null, immediate = false) => {
     if (!r) return
     if (saveTimer.current) clearTimeout(saveTimer.current)
-    const run = () => updateBook(bookId, {
-      progress: Math.min(1, r.fraction),
-      location: r.locator,
-      locationLabel: [r.chapter, locationText(r, r.locator.startsWith('pdf:') ? 'pdf' : 'reflowable')].filter(Boolean).join(' · '),
-      lastReadAt: Date.now(),
-      ...(r.fraction >= 0.995 ? { finished: true } : {}),
-    }).catch(() => {})
+    const run = () => {
+      // only a place the reader moved to is saved: reopening at the saved place, or leaving
+      // after another device read on, must not make this device's place the newest
+      if (!moved.current) {
+        updateBook(bookId, { lastReadAt: Date.now() }).catch(() => {})
+        return
+      }
+      moved.current = false
+      knownPosition.current = Date.now()
+      updateBook(bookId, {
+        progress: Math.min(1, r.fraction),
+        location: r.locator,
+        locationLabel: [r.chapter, locationText(r, r.locator.startsWith('pdf:') ? 'pdf' : 'reflowable')].filter(Boolean).join(' · '),
+        lastReadAt: Date.now(),
+        positionAt: knownPosition.current,
+        ...(r.fraction >= 0.995 ? { finished: true } : {}),
+      }).catch(() => {})
+    }
     if (immediate) run()
     else saveTimer.current = setTimeout(run, 700)
   }, [bookId])
@@ -172,8 +188,10 @@ export const Reader = ({ bookId, target, from }: { bookId: string; target?: stri
     toast(a.kind === 'bookmark' ? 'Bookmark removed' : 'Highlight deleted', 'info', {
       label: 'Undo',
       run: async () => {
-        await putAnnotation(a)
-        setAnnotations(list => [...list, a])
+        // newer than the deletion, which may have synced already
+        const back = { ...a, updatedAt: Date.now() }
+        await putAnnotation(back)
+        setAnnotations(list => [...list, back])
       },
     })
   }
@@ -229,6 +247,7 @@ export const Reader = ({ bookId, target, from }: { bookId: string; target?: stri
         setSelection(null)
         setLookup(null)
         setActiveAnn(null)
+        if (opened.current) moved.current = true
       }
       locRef.current = r
       lastActivity.current = Date.now()
@@ -294,11 +313,14 @@ export const Reader = ({ bookId, target, from }: { bookId: string; target?: stri
     setEngine(null)
     setError(null)
     setLoc(null)
+    opened.current = false
+    moved.current = false
     ;(async () => {
       const [rec, blob] = await Promise.all([getBook(bookId), getBookFile(bookId)])
       if (!rec || !blob) throw new Error('This book could not be found in your library.')
       if (cancelled) return
       setBook(rec)
+      knownPosition.current = Math.max(knownPosition.current, rec.positionAt ?? 0)
       // engines are loaded on demand to keep startup light
       if (rec.format !== 'pdf') eng = new (await import('./epub-engine')).EpubEngine(new File([blob], rec.fileName, { type: blob.type }), rec.title, callbacks)
       else {
@@ -338,6 +360,7 @@ export const Reader = ({ bookId, target, from }: { bookId: string; target?: stri
       if (cancelled) return
       setAnnotations(anns)
       setEngine(eng)
+      opened.current = true
       updateBook(bookId, { lastReadAt: Date.now() })
       stageRef.current?.querySelector<HTMLElement>('.pdf-scroller')?.focus({ preventScroll: true })
       setTimeout(() => !cancelled && setBars(false), 2500)
@@ -372,6 +395,30 @@ export const Reader = ({ bookId, target, from }: { bookId: string; target?: stri
   useEffect(() => {
     engine?.setAnnotations(annotations)
   }, [engine, annotations])
+
+  // a sync brought changes from another device
+  const syncVersion = useApp(s => s.syncVersion)
+  useEffect(() => {
+    if (!engine || !syncVersion) return
+    let alive = true
+    ;(async () => {
+      if (useApp.getState().syncedBooks.includes(bookId)) {
+        const anns = await getAnnotations(bookId)
+        if (alive) setAnnotations(anns)
+      }
+      const rec = await getBook(bookId)
+      if (!alive || !rec?.location || (rec.positionAt ?? 0) <= knownPosition.current) return
+      knownPosition.current = rec.positionAt!
+      if (rec.location === locRef.current?.locator) return
+      toast(`On another device you’re at ${rec.locationLabel || percent(rec.progress)}`, 'info', {
+        label: 'Go there',
+        run: () => navigate(rec.location!),
+      })
+    })().catch(() => {})
+    return () => {
+      alive = false
+    }
+  }, [engine, syncVersion]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const viewKey = VIEW_KEYS.map(k => String(settings[k])).join('|')
   useEffect(() => {

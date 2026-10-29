@@ -1,4 +1,4 @@
-import { ArrowDown, ArrowUp, BookA, Database, Download, Headphones, Info, Monitor, Moon, Plus, Sun, Trash, Upload } from 'lucide-react'
+import { ArrowDown, ArrowUp, BookA, Cloud, Database, Download, Headphones, Info, Monitor, Moon, Plus, Sun, Trash, Upload } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { deleteUserDict, exportBackup, getUserDicts, importBackup, putUserDict, type UserDictRecord } from '../lib/db'
 import { getBuiltinSources, listSources, type DictSource } from '../lib/dictionary'
@@ -7,18 +7,21 @@ import { formatSize } from '../lib/format'
 import { exportFile, isNative } from '../lib/platform'
 import { useSettings } from '../lib/settings'
 import { toast, useApp } from '../lib/store'
+import { useSync } from '../lib/sync'
 import { getVoices, resetVoiceCache, speak, stopSpeaking, type Voice } from '../lib/tts'
 import { Button, IconButton, Segmented, Sheet, Slider, Spinner, Switch } from '../components/ui'
+import { SyncSettings } from './SyncSettings'
 
 const LANGS = ['ar', 'bn', 'cs', 'da', 'de', 'el', 'es', 'fa', 'fi', 'fr', 'he', 'hi', 'hu', 'id', 'it', 'ja', 'ko', 'ms', 'nl', 'no', 'pl', 'pt', 'ro', 'ru', 'sv', 'th', 'tr', 'uk', 'vi', 'zh-CN', 'zh-TW', 'en']
 const langName = new Intl.DisplayNames(['en'], { type: 'language' })
 
-type Section = 'general' | 'dictionary' | 'voice' | 'data' | 'about'
+type Section = 'general' | 'dictionary' | 'voice' | 'sync' | 'data' | 'about'
 
 export const SettingsModal = () => {
   const open = useApp(s => s.settingsOpen)
   const setOpen = useApp(s => s.openSettings)
-  const [section, setSection] = useState<Section>('general')
+  const section = useApp(s => s.settingsSection) as Section
+  const setSection = (settingsSection: Section) => useApp.setState({ settingsSection })
   return (
     <Sheet open={open} onClose={() => setOpen(false)} title="Settings" wide className="settings">
       <div className="settings-layout">
@@ -27,6 +30,7 @@ export const SettingsModal = () => {
             ['general', 'General', <Monitor size={17} key="g" />],
             ['dictionary', 'Dictionaries', <BookA size={17} key="d" />],
             ['voice', 'Read aloud', <Headphones size={17} key="v" />],
+            ['sync', 'Sync', <Cloud size={17} key="s" />],
             ['data', 'Data & backup', <Database size={17} key="b" />],
             ['about', 'About', <Info size={17} key="a" />],
           ] as [Section, string, React.ReactNode][]).map(([id, label, icon]) => (
@@ -37,6 +41,7 @@ export const SettingsModal = () => {
           {section === 'general' && <General />}
           {section === 'dictionary' && <Dictionaries />}
           {section === 'voice' && <VoiceSettings />}
+          {section === 'sync' && <SyncSettings />}
           {section === 'data' && <DataSettings />}
           {section === 'about' && <About />}
         </div>
@@ -253,6 +258,7 @@ const VoiceSettings = () => {
 
 const DataSettings = () => {
   const refresh = useApp(s => s.refreshLibrary)
+  const synced = useSync(s => !!s.refreshToken)
   const [usage, setUsage] = useState<{ usage: number; quota: number } | null>(null)
   const [persisted, setPersisted] = useState<boolean | null>(null)
   const input = useRef<HTMLInputElement>(null)
@@ -264,7 +270,9 @@ const DataSettings = () => {
     <div className="settings-section">
       <h3>Storage</h3>
       <p className="muted">
-        Your books, highlights and settings are stored only on this device.
+        {synced
+          ? 'Your books and settings are stored on this device. Highlights, notes, vocabulary and reading progress also sync with Google Drive.'
+          : 'Your books, highlights and settings are stored only on this device. Turn on Sync to keep highlights and notes on all your devices.'}
         {usage && ` Using ${formatSize(usage.usage)}${usage.quota ? ` of ${formatSize(usage.quota)} available` : ''}.`}
         {persisted === false && ' Storage may be cleared by the system when space is low.'}
       </p>

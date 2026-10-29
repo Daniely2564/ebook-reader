@@ -6,7 +6,7 @@ import { stripHtml } from '../lib/dictionary/sanitize'
 import { deleteVocab, getVocab, putVocab, uid } from '../lib/db'
 import { openExternal } from '../lib/platform'
 import { useSettings } from '../lib/settings'
-import { toast } from '../lib/store'
+import { toast, useApp } from '../lib/store'
 import { getVoices, sayWord } from '../lib/tts'
 import { IconButton, Spinner } from '../components/ui'
 
@@ -17,6 +17,10 @@ const loadSaved = () => savedWords ??= getVocab()
 export const invalidateSavedWords = () => {
   savedWords = null
 }
+// words saved or removed on another device
+useApp.subscribe((s, prev) => {
+  if (s.syncVersion !== prev.syncVersion) invalidateSavedWords()
+})
 
 const firstDefinition = (r: DictResult | undefined) => {
   // the word's own meaning ("better"), not its lemma's ("good") when it has one
