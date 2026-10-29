@@ -2,7 +2,8 @@ import { create } from 'zustand'
 
 export type Route =
   | { name: 'library' }
-  | { name: 'highlights' }
+  /** `bookId`: show one book's highlights */
+  | { name: 'highlights'; bookId?: string }
   | { name: 'vocab' }
   | { name: 'dictionary'; word?: string }
   /** `target`: a place to show instead of the reading position; `from`: the page to go back to */

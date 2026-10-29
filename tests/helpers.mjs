@@ -8,14 +8,14 @@ const chapter = (n, body) => `<?xml version="1.0" encoding="utf-8"?>
 <html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" lang="en"><head><title>Chapter ${n}</title></head>
 <body><h1>Chapter ${n}</h1>${body}</body></html>`
 
-export const makeEpub = () => zipSync({
+export const makeEpub = ({ title = 'Smoke Test Book', id = 'lumen-smoke' } = {}) => zipSync({
   mimetype: [strToU8('application/epub+zip'), { level: 0 }],
   'META-INF/container.xml': strToU8(`<?xml version="1.0"?><container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
 <rootfiles><rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/></rootfiles></container>`),
   'OEBPS/content.opf': strToU8(`<?xml version="1.0" encoding="utf-8"?>
 <package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="id">
-<metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:identifier id="id">lumen-smoke</dc:identifier>
-<dc:title>Smoke Test Book</dc:title><dc:creator>Lumen QA</dc:creator><dc:language>en</dc:language>
+<metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:identifier id="id">${id}</dc:identifier>
+<dc:title>${title}</dc:title><dc:creator>Lumen QA</dc:creator><dc:language>en</dc:language>
 <meta property="dcterms:modified">2026-01-01T00:00:00Z</meta></metadata>
 <manifest><item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>
 <item id="c1" href="c1.xhtml" media-type="application/xhtml+xml"/><item id="c2" href="c2.xhtml" media-type="application/xhtml+xml"/></manifest>

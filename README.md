@@ -39,7 +39,7 @@ A calm, fast ebook reader for **desktop (Electron)** and **Android (Capacitor)**
 
 **Notes and more**
 - Highlights in 5 colors with notes, bookmarks, a Notes panel, and Markdown export.
-- **Highlights** page: every highlight and note from all your books in one place, by book (in reading order) or by date, with search, color and book filters, and one click to jump back to the passage.
+- **Highlights** page: every highlight and note from all your books in one place, by book (in reading order) or by date, with search and color filters, and one click to jump back to the passage. Pick a cover on the shelf (or *Highlights* in a book's menu) to see just that book's highlights. Export what's shown as Markdown, as CSV for spreadsheets and database apps, or copy it as Markdown.
 - **Read aloud** with sentence highlighting and automatic page turns (Web Speech on desktop, the native TTS engine on Android).
 - Reading time and daily streak, "Continue reading", library search, filters, sort, and grid or list view.
 - **Sync with Google Drive**: highlights, notes, bookmarks, vocabulary, reading positions and reading time stay the same on all your devices (desktop, Android, web), with an optional Markdown copy of each book's highlights in Drive to read in any app.

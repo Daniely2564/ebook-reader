@@ -3,7 +3,8 @@
 // build (served by `vite preview`), turns pages, looks up an inflected word
 // in the offline dictionary, checks that the dictionary picked stays picked,
 // that turning the page closes the dictionary popup, that reading progress is
-// saved, and that a highlight shows up on the Highlights page and opens there.
+// saved, that a highlight shows up on the Highlights page and opens there, and
+// that the Highlights page can show one book's highlights and export them.
 //
 //   npm run test:e2e            (set CHROMIUM_PATH to use a specific Chromium)
 import assert from 'node:assert/strict'
@@ -119,6 +120,50 @@ try {
   await page.evaluate(() => document.querySelector('[aria-label="Back to highlights"]').click())
   await page.waitForSelector('.hl-card')
   step(`opens a highlight in the book (${highlightPage}, with a way back to ${readTo})`)
+
+  // a second book with a highlight: the shelf picks one book, which stays picked after opening a highlight
+  const secondPath = path.join(dir, 'second-test.epub')
+  fs.writeFileSync(secondPath, makeEpub({ title: 'Second Test Book', id: 'lumen-smoke-2' }))
+  await page.locator('.nav button', { hasText: 'Library' }).click()
+  await page.setInputFiles('input[type=file][multiple]', secondPath)
+  await page.waitForFunction(() => document.querySelectorAll('.book').length === 2, null, { timeout: 30_000 })
+  await page.locator('.book', { hasText: 'Second Test Book' }).click()
+  await page.waitForFunction(() => /Page \d+/.test(document.querySelector('.info-left')?.textContent ?? ''), null, { timeout: 20_000 })
+  await page.waitForTimeout(1500)
+  await lookUp('riverbank')
+  await page.locator('.dict-pop .dict-hl-row .swatch').first().click()
+  await page.waitForSelector('.dict-pop', { state: 'detached' })
+  await page.evaluate(() => document.querySelector('[aria-label="Back to library"]').click())
+  await page.locator('.nav button', { hasText: 'Highlights' }).click()
+  await page.waitForSelector('.hl-shelf')
+  assert.equal(await page.locator('.hl-shelf-item').count(), 3)
+  assert.equal(await page.locator('.hl-group').count(), 2)
+  await page.locator('.hl-shelf-item', { hasText: 'Second Test Book' }).click()
+  await page.waitForSelector('.hl-focus')
+  assert.match(await page.locator('.hl-focus h2').innerText(), /Second Test Book/)
+  assert.equal(await page.locator('.hl-card').count(), 1)
+  assert.match(await page.locator('.hl-card .hl-quote').innerText(), /riverbank/)
+  step('shows the highlights of one book picked from the shelf')
+
+  await page.getByRole('button', { name: 'Export', exact: true }).click()
+  const [download] = await Promise.all([
+    page.waitForEvent('download'),
+    page.getByRole('menuitem', { name: 'CSV for spreadsheets and databases' }).click(),
+  ])
+  const csv = fs.readFileSync(await download.path(), 'utf8')
+  assert.equal(download.suggestedFilename(), 'Second Test Book - highlights.csv')
+  assert.match(csv, /^\ufeff"Highlight","Note","Book","Author","Chapter","Location","Color","Highlighted"\r\n"riverbank","","Second Test Book","Lumen QA","Chapter 1",/)
+  assert.doesNotMatch(csv, /lanterns/)
+  step('exports that book\'s highlights as CSV')
+
+  await page.locator('.hl-card .hl-where').click()
+  await page.waitForSelector('foliate-view')
+  await page.evaluate(() => document.querySelector('[aria-label="Back to highlights"]').click())
+  await page.waitForSelector('.hl-focus')
+  assert.match(await page.locator('.hl-focus h2').innerText(), /Second Test Book/)
+  await page.locator('.hl-shelf-item', { hasText: 'All books' }).click()
+  await page.waitForFunction(() => document.querySelectorAll('.hl-group').length === 2)
+  step('keeps the book picked after opening one of its highlights, then shows all books again')
 
   assert.deepEqual(errors, [])
   step('no page errors')

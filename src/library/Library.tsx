@@ -1,4 +1,4 @@
-import { ArrowUpDown, BookOpen, Check, Clock, Ellipsis, Flame, Info, LayoutGrid, LayoutList, Play, Plus, Search, Trash, Undo2, X } from 'lucide-react'
+import { ArrowUpDown, BookOpen, Check, Clock, Ellipsis, Flame, Highlighter, Info, LayoutGrid, LayoutList, Play, Plus, Search, Trash, Undo2, X } from 'lucide-react'
 import { useMemo, useState } from 'react'
 import { deleteBook, getAnnotations, updateBook, type BookRecord } from '../lib/db'
 import { formatDuration, formatRelative, formatSize, percent, safeFileName } from '../lib/format'
@@ -86,6 +86,7 @@ export const Library = ({ onImport }: { onImport: () => void }) => {
   const bookMenu = (b: BookRecord) => [
     { label: 'Open', icon: <BookOpen size={16} />, onSelect: () => open(b) },
     { label: 'Details', icon: <Info size={16} />, onSelect: () => setDetails(b) },
+    { label: 'Highlights', icon: <Highlighter size={16} />, onSelect: () => go({ name: 'highlights', bookId: b.id }) },
     b.finished
       ? { label: 'Mark as unread', icon: <Undo2 size={16} />, onSelect: () => setFinished(b, false) }
       : { label: 'Mark as finished', icon: <Check size={16} />, onSelect: () => setFinished(b, true) },

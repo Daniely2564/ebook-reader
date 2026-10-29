@@ -186,7 +186,7 @@ export const App = () => {
           </nav>
           <main className="main">
             {route.name === 'library' && <Library onImport={openImport} />}
-            {route.name === 'highlights' && <Highlights />}
+            {route.name === 'highlights' && <Highlights bookId={route.bookId} />}
             {route.name === 'vocab' && <Vocabulary />}
             {route.name === 'dictionary' && <DictionaryPage initial={route.word} />}
           </main>
