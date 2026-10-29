@@ -1,4 +1,4 @@
-import { ArrowDown, ArrowUp, BookA, Cloud, Database, Download, Headphones, Info, Monitor, Moon, Plus, Sun, Trash, Upload } from 'lucide-react'
+import { ArrowDown, ArrowUp, BookA, Cloud, Database, Download, Headphones, Info, Monitor, Moon, Plus, Send, Sun, Trash, Upload } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { deleteUserDict, exportBackup, getUserDicts, importBackup, putUserDict, type UserDictRecord } from '../lib/db'
 import { getBuiltinSources, listSources, type DictSource } from '../lib/dictionary'
@@ -10,12 +10,13 @@ import { toast, useApp } from '../lib/store'
 import { useSync } from '../lib/sync'
 import { getVoices, resetVoiceCache, speak, stopSpeaking, type Voice } from '../lib/tts'
 import { Button, IconButton, Segmented, Sheet, Slider, Spinner, Switch } from '../components/ui'
+import { DotionSettings } from './DotionSettings'
 import { SyncSettings } from './SyncSettings'
 
 const LANGS = ['ar', 'bn', 'cs', 'da', 'de', 'el', 'es', 'fa', 'fi', 'fr', 'he', 'hi', 'hu', 'id', 'it', 'ja', 'ko', 'ms', 'nl', 'no', 'pl', 'pt', 'ro', 'ru', 'sv', 'th', 'tr', 'uk', 'vi', 'zh-CN', 'zh-TW', 'en']
 const langName = new Intl.DisplayNames(['en'], { type: 'language' })
 
-type Section = 'general' | 'dictionary' | 'voice' | 'sync' | 'data' | 'about'
+type Section = 'general' | 'dictionary' | 'voice' | 'sync' | 'dotion' | 'data' | 'about'
 
 export const SettingsModal = () => {
   const open = useApp(s => s.settingsOpen)
@@ -31,6 +32,7 @@ export const SettingsModal = () => {
             ['dictionary', 'Dictionaries', <BookA size={17} key="d" />],
             ['voice', 'Read aloud', <Headphones size={17} key="v" />],
             ['sync', 'Sync', <Cloud size={17} key="s" />],
+            ['dotion', 'Dotion', <Send size={17} key="n" />],
             ['data', 'Data & backup', <Database size={17} key="b" />],
             ['about', 'About', <Info size={17} key="a" />],
           ] as [Section, string, React.ReactNode][]).map(([id, label, icon]) => (
@@ -42,6 +44,7 @@ export const SettingsModal = () => {
           {section === 'dictionary' && <Dictionaries />}
           {section === 'voice' && <VoiceSettings />}
           {section === 'sync' && <SyncSettings />}
+          {section === 'dotion' && <DotionSettings />}
           {section === 'data' && <DataSettings />}
           {section === 'about' && <About />}
         </div>

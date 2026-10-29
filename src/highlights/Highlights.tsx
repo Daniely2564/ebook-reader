@@ -1,4 +1,4 @@
-import { ArrowUpRight, BookOpen, ClipboardCopy, CloudOff, Copy, Download, FileText, Highlighter, LibraryBig, NotebookPen, Palette, Search, Table, Trash, X } from 'lucide-react'
+import { ArrowUpRight, BookOpen, ClipboardCopy, CloudOff, Copy, Download, FileText, Highlighter, LibraryBig, NotebookPen, Palette, Search, Send, Table, Trash, X } from 'lucide-react'
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { deleteAnnotation, getAllAnnotations, getBooks, putAnnotation, type Annotation, type BookRecord, type HighlightColor } from '../lib/db'
 import { annotationsToMarkdown, highlightsToCsv, sortAnnotations } from '../lib/annotations'
@@ -12,6 +12,7 @@ import { HIGHLIGHT_COLORS } from '../lib/themes'
 import { Button, Empty, IconButton, Menu, Segmented, Spinner, type MenuItem } from '../components/ui'
 import { BookCover } from '../library/BookCover'
 import { NoteDialog } from '../reader/Popovers'
+import { DotionDialog } from './DotionDialog'
 
 const COLORS = Object.keys(HIGHLIGHT_COLORS) as HighlightColor[]
 /** longer highlights are cut here until expanded */
@@ -51,6 +52,7 @@ export const Highlights = ({ bookId }: { bookId?: string }) => {
   const [query, setQuery] = useState('')
   const [filter, setFilter] = useState<Filter>('all')
   const [noteFor, setNoteFor] = useState<Annotation | null>(null)
+  const [dotion, setDotion] = useState(false)
   /** synced books that are not on this device */
   const [away, setAway] = useState<Set<string>>(new Set())
   const syncVersion = useApp(s => s.syncVersion)
@@ -197,13 +199,15 @@ export const Highlights = ({ bookId }: { bookId?: string }) => {
   }
 
   /** exports what is shown: every book or the one picked, with the search and color filters */
-  const exportItems: MenuItem[] = (() => {
+  const exportItems: (MenuItem | 'sep')[] = (() => {
     const name = book ? `${safeFileName(book.title)} - highlights` : 'Lumen highlights'
     const markdown = () => byBook.map(g => annotationsToMarkdown(g.book, g.items)).join('\n---\n\n')
     return [
       { label: 'Markdown file', icon: <FileText size={16} />, onSelect: () => exportFile(`${name}.md`, markdown(), 'text/markdown') },
       { label: 'CSV for spreadsheets and databases', icon: <Table size={16} />, onSelect: () => exportFile(`${name}.csv`, highlightsToCsv(byBook), 'text/csv') },
       { label: 'Copy as Markdown', icon: <ClipboardCopy size={16} />, onSelect: () => copyText(markdown(), `Copied ${plural(shown.length, 'highlight')}`) },
+      'sep',
+      { label: 'Send to Dotion…', icon: <Send size={16} />, onSelect: () => setDotion(true) },
     ]
   })()
 
@@ -355,6 +359,8 @@ export const Highlights = ({ bookId }: { bookId?: string }) => {
           })}
         </>
       )}
+
+      {dotion && <DotionDialog groups={byBook} scope={book ? `“${book.title}”` : plural(byBook.length, 'book')} onClose={() => setDotion(false)} />}
 
       <NoteDialog annotation={noteFor} onClose={() => setNoteFor(null)}
         onDelete={noteFor ? () => {

@@ -21,4 +21,5 @@ contextBridge.exposeInMainWorld('lumenNative', {
   },
   toggleFullscreen: () => ipcRenderer.send('toggle-fullscreen'),
   isFullscreen: () => ipcRenderer.invoke('is-fullscreen'),
+  dotionRequest: request => ipcRenderer.invoke('dotion-request', request),
 })

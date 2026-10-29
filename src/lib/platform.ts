@@ -12,6 +12,8 @@ interface LumenNative {
   onFullscreen(cb: (value: boolean) => void): () => void
   toggleFullscreen(): void
   isFullscreen(): Promise<boolean>
+  /** a Dotion API request, made by the main process (Dotion's API has no CORS) */
+  dotionRequest?(request: { url: string; method: string; headers: Record<string, string>; body?: string }): Promise<{ status: number; body: string }>
 }
 
 declare global {

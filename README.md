@@ -42,6 +42,7 @@ A calm, fast ebook reader for **desktop (Electron)** and **Android (Capacitor)**
 - **Highlights** page: every highlight and note from all your books in one place, by book (in reading order) or by date, with search and color filters, and one click to jump back to the passage. Pick a cover on the shelf (or *Highlights* in a book's menu) to see just that book's highlights. Export what's shown as Markdown, as CSV for spreadsheets and database apps, or copy it as Markdown.
 - **Read aloud** with sentence highlighting and automatic page turns (Web Speech on desktop, the native TTS engine on Android).
 - Reading time and daily streak, "Continue reading", library search, filters, sort, and grid or list view.
+- **Send to Dotion**: send highlights and notes (one book's, or all of them) to a Dotion database, one page per book, or add them to an existing page. Sending again only adds new highlights; nothing in Dotion is changed or removed.
 - **Sync with Google Drive**: highlights, notes, bookmarks, vocabulary, reading positions and reading time stay the same on all your devices (desktop, Android, web), with an optional Markdown copy of each book's highlights in Drive to read in any app.
 - Backup and restore of progress, highlights, vocabulary and stats as JSON.
 - Everything stays on the device (IndexedDB) unless you turn on sync. No account or tracking.
@@ -99,6 +100,15 @@ Signing in needs a (free) Google OAuth client of your own:
 
 How it merges: each device combines its data with the copy in Drive. The newest edit of each highlight or note wins, deletions are remembered so they reach every device, a book's position follows the device that last turned a page (an open book offers to jump there), and reading time is counted per device and added up. Book files are not uploaded: add the same file on another device and it opens where you left off. Highlights of books that aren't on a device still show on its Highlights page. Removing a book while sync is on keeps its highlights.
 
+### Send highlights to Dotion
+
+In **Settings → Dotion**, paste an API token created on your Dotion's Developers page (`https://dotion-note.vercel.app/developers`, or your own Dotion address). Then, on the Highlights page, **Export → Send to Dotion…** sends what is shown, either:
+
+- to a **database**: each book becomes a page titled with the book's title. If the database already has a page with that title (say, your own notes on the book), the highlights it doesn't have yet are added at its end under "Highlights from Lumen Reader";
+- to an **existing page**, found by search or by pasting its link: highlights are added at its end under each book's title.
+
+Highlights already on the page (as quotes) are skipped, so sending again is safe. The token is kept on the device. Dotion's API doesn't allow cross-origin requests, so the desktop app sends them from its main process and the Android app with native HTTP; the web version can only send to a Dotion server that allows its origin.
+
 ### Continuous integration
 
 `.github/workflows/build.yml` type-checks the code, runs the end-to-end tests, then builds Linux/Windows/macOS packages and Android APKs as workflow artifacts. Add the `ANDROID_KEYSTORE_BASE64`, `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS` and `ANDROID_KEY_PASSWORD` secrets to get a signed release APK, and `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` to build in Google Drive sign-in.
@@ -108,7 +118,7 @@ How it merges: each device combines its data with the copy in Drive. The newest 
 ```bash
 npm run typecheck
 npm run test:e2e   # builds, serves the app and drives it in Chromium (set CHROMIUM_PATH if needed);
-                   # the sync test runs two devices against a fake Google Drive
+                   # the sync and Dotion tests run against fakes of Google Drive and Dotion
 ```
 
 ## Before you publish
@@ -145,10 +155,13 @@ src/
   lib/dictionary/          Wiktionary + WordNet lookup and lemmatizer, StarDict reader, online sources, sanitizer
   lib/db.ts                IndexedDB storage (books, files, annotations, vocabulary, stats)
   lib/sync/                Google Drive sync: merge rules, sign-in and Drive calls, scheduling
-  settings/                Settings, including Sync
+  lib/dotion.ts            sending highlights to Dotion through its REST API
+  highlights/              Highlights page and the Send to Dotion dialog
+  settings/                Settings, including Sync and Dotion
   vendor/foliate-js/       vendored foliate-js (MIT)
 tests/smoke.mjs            end-to-end test
 tests/sync.mjs             end-to-end sync test (two devices, fake Google Drive)
+tests/dotion.mjs           end-to-end Send to Dotion test (fake Dotion API)
 ```
 
 ## Licenses

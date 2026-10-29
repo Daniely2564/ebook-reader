@@ -392,6 +392,22 @@ input:focus-visible + .switch { outline: 2px solid var(--accent); outline-offset
   background: var(--surface); color: var(--text); font: 13px ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
 }
 .sync-field input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+.sync-card > .btn { margin-inline-start: auto; }
+.dotion-sheet .sheet-body > p { margin: 0 0 12px; }
+.dotion-pick { display: grid; gap: 8px; margin: 14px 0 10px; }
+.dotion-pick p { margin: 0; }
+.dotion-chosen { display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-radius: 10px; background: var(--accent-soft); }
+.dotion-chosen svg { color: var(--accent); flex: none; }
+.dotion-pages { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; max-height: 240px; overflow-y: auto; }
+.dotion-pages button { display: grid; width: 100%; padding: 8px 12px; border-radius: 10px; text-align: start; }
+.dotion-pages button:hover { background: var(--surface-2); }
+.dotion-pages button[aria-pressed=true] { background: var(--accent-soft); }
+.dotion-pages small { color: var(--muted); }
+.dotion-results { list-style: none; margin: 0 0 8px; padding: 0; display: grid; gap: 6px; }
+.dotion-results li { display: flex; align-items: center; gap: 12px; padding: 10px 14px; border-radius: 12px; background: var(--surface-2); }
+.dotion-results li > div { display: grid; flex: 1; min-width: 0; }
+.dotion-results li span { color: var(--muted); }
+.dotion-results li.failed span { color: var(--danger); }
 .shortcuts { display: grid; gap: 2px; margin: 0; }
 .shortcuts div { display: flex; justify-content: space-between; gap: 16px; padding: 7px 0; border-bottom: 1px solid var(--border); }
 .shortcuts dd { margin: 0; color: var(--muted); text-align: end; }

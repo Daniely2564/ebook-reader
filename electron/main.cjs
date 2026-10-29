@@ -144,6 +144,17 @@ ipcMain.on('renderer-ready', () => {
 ipcMain.on('toggle-fullscreen', () => win?.setFullScreen(!win.isFullScreen()))
 ipcMain.handle('is-fullscreen', () => !!win?.isFullScreen())
 
+// Dotion's REST API (sending highlights to the user's notes) sends no CORS headers, so the
+// renderer's requests go out from here. Only Dotion API calls are passed on.
+ipcMain.handle('dotion-request', async (_e, { url, method, headers, body }) => {
+  const u = new URL(url)
+  const local = u.hostname === 'localhost' || u.hostname === '127.0.0.1'
+  if (!(u.protocol === 'https:' || (local && u.protocol === 'http:')) || !u.pathname.startsWith('/api/v1/') ||
+    !['GET', 'POST', 'PATCH', 'DELETE'].includes(method)) throw new Error('Not a Dotion API request')
+  const res = await net.fetch(u.href, { method, headers, body })
+  return { status: res.status, body: await res.text() }
+})
+
 app.whenReady().then(() => {
   protocol.handle('app', req => {
     const { pathname } = new URL(req.url)
