@@ -41,12 +41,48 @@ const locationText = (loc: Relocation | null, kind?: ReaderEngine['kind']) => {
 
 type NoteTarget = { annotation: Annotation } | { draft: SelectionInfo; color: HighlightColor }
 
+/**
+ * Insets of the page area that stay put while the system bars come and go (on Android
+ * they hide and show with the reader's bars, which overlay the page): the largest
+ * insets seen in the current orientation. Following the live insets would lay the
+ * whole book out again, and move the text, every time the bars toggle.
+ */
+const useSteadyInsets = () => {
+  const [insets, setInsets] = useState<number[] | null>(null)
+  useEffect(() => {
+    const probe = document.createElement('div')
+    probe.style.cssText = 'position:fixed;top:0;left:0;visibility:hidden;pointer-events:none;padding:var(--sat) var(--sar) var(--sab) var(--sal)'
+    document.body.append(probe)
+    let landscape: boolean | null = null
+    let max = [0, 0, 0, 0]
+    const read = () => {
+      const cs = getComputedStyle(probe)
+      const now = [cs.paddingTop, cs.paddingRight, cs.paddingBottom, cs.paddingLeft].map(v => parseFloat(v) || 0)
+      const wide = innerWidth > innerHeight
+      max = wide === landscape ? max.map((m, i) => Math.max(m, now[i])) : now
+      landscape = wide
+      setInsets(prev => (prev?.every((v, i) => v === max[i]) ? prev : max))
+    }
+    read()
+    const ro = new ResizeObserver(read)
+    ro.observe(probe, { box: 'border-box' })
+    addEventListener('resize', read)
+    return () => {
+      ro.disconnect()
+      removeEventListener('resize', read)
+      probe.remove()
+    }
+  }, [])
+  return insets
+}
+
 export const Reader = ({ bookId, target, from }: { bookId: string; target?: string; from?: Exclude<Route, { name: 'reader' }> }) => {
   const settings = useSettings()
   const go = useApp(s => s.go)
   const refreshLibrary = useApp(s => s.refreshLibrary)
   const openSettings = useApp(s => s.openSettings)
   const stageRef = useRef<HTMLDivElement>(null)
+  const insets = useSteadyInsets()
 
   const [book, setBook] = useState<BookRecord | null>(null)
   const [engine, setEngine] = useState<ReaderEngine | null>(null)
@@ -617,6 +653,7 @@ export const Reader = ({ bookId, target, from }: { bookId: string; target?: stri
   const style = {
     '--r-bg': theme.bg, '--r-fg': theme.fg, '--r-muted': theme.muted, '--r-surface': theme.surface,
     '--r-border': theme.border, '--r-link': theme.link,
+    ...(insets && { '--stage-t': `${insets[0]}px`, '--stage-r': `${insets[1]}px`, '--stage-b': `${insets[2]}px`, '--stage-l': `${insets[3]}px` }),
   } as React.CSSProperties
 
   if (error) {

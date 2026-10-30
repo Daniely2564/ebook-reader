@@ -8,7 +8,7 @@ import type { Annotation } from '../lib/db'
 import { loadPdfViewer, openPdf, pdfjsLib, resolveOutline } from '../lib/pdfjs'
 import type { Settings } from '../lib/settings'
 import { HIGHLIGHT_COLORS, themeById, type ReaderTheme } from '../lib/themes'
-import { mergeRects, parsePdfLocator, type PdfLocator, type Rect4 } from './pdf-locator'
+import { locatorParts, makePdfLocator, parsePdfLocator, type Rect4 } from './pdf-locator'
 import { contextSentence, type Rect } from './text'
 import type { EngineCallbacks, ReaderEngine, SearchHit, SpeechChunk, TocItem, ZoomAction } from './types'
 
@@ -52,7 +52,8 @@ export class PdfEngine implements ReaderEngine {
   #highlights: Annotation[] = []
   #history: number[] = []
   #page = 1
-  #viewArea: { left: number; top: number } | null = null
+  /** top left corner of the view, on the topmost page showing (which isn't always the current page) */
+  #viewArea: { page: number; left: number; top: number } | null = null
   #outlinePages: { page: number; label: string; target: string }[] = []
   #dests = new Map<string, unknown>()
   #pageText = new Map<number, Promise<string>>()
@@ -149,8 +150,8 @@ export class PdfEngine implements ReaderEngine {
       this.#emitRelocate()
     })
     eventBus.on('updateviewarea', ({ location }: { location: { pageNumber: number; left: number; top: number } }) => {
-      this.#viewArea = { left: location.left, top: location.top }
-      if (location.pageNumber === this.#page) this.#emitRelocate()
+      this.#viewArea = { page: location.pageNumber, left: location.left, top: location.top }
+      this.#emitRelocate()
     })
     eventBus.on('scalechanging', () => this.#emitRelocate())
     eventBus.on('pagerendered', ({ pageNumber }: { pageNumber: number }) => this.#drawPage(pageNumber))
@@ -275,7 +276,8 @@ export class PdfEngine implements ReaderEngine {
     const va = this.#viewArea
     this.#cb.onRelocate({
       fraction: total > 1 ? (page - 1) / (total - 1) : 1,
-      locator: va ? `pdf:${page}@${Math.round(va.left)},${Math.round(va.top)}` : `pdf:${page}`,
+      // the place is where the view starts, which may be on the page above the current one
+      locator: va ? `pdf:${va.page}@${Math.round(va.left)},${Math.round(va.top)}` : `pdf:${page}`,
       chapter: chapter?.label,
       chapterTarget: chapter?.target,
       page: { current: page, total, label: label && label !== String(page) ? label : undefined },
@@ -704,17 +706,18 @@ export class PdfEngine implements ReaderEngine {
       list.push([(cr.left - hit.r.left) / hit.r.width, (cr.top - hit.r.top) / hit.r.height, cr.width / hit.r.width, cr.height / hit.r.height])
       byPage.set(hit.page, list)
     }
-    const first = [...byPage.entries()].sort((a, b) => a[0] - b[0])[0]
-    const locator = first ? JSON.stringify({ p: first[0], r: mergeRects(first[1]) } satisfies PdfLocator) : null
+    // a selection running across a page break keeps every page it covers
+    const loc = makePdfLocator(byPage)
+    const page = loc?.p ?? this.#page
     const r = range.getBoundingClientRect()
     this.#cb.onSelection({
       text,
       rect: { left: r.left, top: r.top, right: r.right, bottom: r.bottom },
-      locator,
+      locator: loc ? JSON.stringify(loc) : null,
       context: contextSentence(range),
-      chapter: [...this.#outlinePages].reverse().find(o => o.page <= (first?.[0] ?? this.#page))?.label,
-      page: first?.[0] ?? this.#page,
-      fraction: this.#doc.numPages > 1 ? ((first?.[0] ?? this.#page) - 1) / (this.#doc.numPages - 1) : 1,
+      chapter: [...this.#outlinePages].reverse().find(o => o.page <= page)?.label,
+      page,
+      fraction: this.#doc.numPages > 1 ? (page - 1) / (this.#doc.numPages - 1) : 1,
       isWord: fromWordGesture && !/\s/.test(text) && text.length <= 48,
     })
   }
@@ -739,7 +742,12 @@ export class PdfEngine implements ReaderEngine {
     const div: HTMLElement | undefined = view?.div
     if (!div) return
     let layer = div.querySelector<HTMLElement>(':scope > .lumen-hl-layer')
-    const items = this.#highlights.map(a => ({ a, loc: parsePdfLocator(a.locator) })).filter(x => x.loc?.p === pageNumber)
+    const items = this.#highlights.flatMap(a => {
+      const loc = parsePdfLocator(a.locator)
+      const parts = loc ? locatorParts(loc) : []
+      const part = parts.find(x => x.p === pageNumber)
+      return part ? [{ a, rects: part.r, last: part === parts[parts.length - 1] }] : []
+    })
     if (!items.length) {
       layer?.remove()
       return
@@ -755,16 +763,16 @@ export class PdfEngine implements ReaderEngine {
     layer.replaceChildren()
     const dark = this.#theme.dark && this.#settings?.pdfThemed !== false
     layer.classList.toggle('dark', dark)
-    for (const { a, loc } of items) {
+    for (const { a, rects, last } of items) {
       const c = HIGHLIGHT_COLORS[a.color ?? 'yellow']
-      for (const [x, y, w, h] of loc!.r) {
+      for (const [x, y, w, h] of rects) {
         const el = document.createElement('div')
         el.className = 'lumen-hl'
         Object.assign(el.style, { left: `${x * 100}%`, top: `${y * 100}%`, width: `${w * 100}%`, height: `${h * 100}%`, background: dark ? c.dark : c.light })
         layer.append(el)
       }
-      if (a.note) {
-        const [x, y, w] = loc!.r[loc!.r.length - 1]
+      if (a.note && last && rects.length) {
+        const [x, y, w] = rects[rects.length - 1]
         const dot = document.createElement('div')
         dot.className = 'lumen-hl-note'
         Object.assign(dot.style, { left: `${(x + w) * 100}%`, top: `${y * 100}%`, background: dark ? c.dark : c.light })
@@ -780,10 +788,11 @@ export class PdfEngine implements ReaderEngine {
     const py = (y - hit.r.top) / hit.r.height
     for (const a of [...this.#highlights].reverse()) {
       const loc = parsePdfLocator(a.locator)
-      if (loc?.p !== hit.page) continue
-      for (const [rx, ry, rw, rh] of loc.r) {
+      const part = loc && locatorParts(loc).find(x => x.p === hit.page)
+      if (!part) continue
+      for (const [rx, ry, rw, rh] of part.r) {
         if (px >= rx && px <= rx + rw && py >= ry && py <= ry + rh) {
-          const [fx, fy, fw, fh] = loc.r[0]
+          const [fx, fy, fw, fh] = part.r[0]
           const left = hit.r.left + fx * hit.r.width
           const top = hit.r.top + fy * hit.r.height
           return { id: a.id, rect: { left, top, right: left + fw * hit.r.width, bottom: top + fh * hit.r.height } }

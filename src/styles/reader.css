@@ -3,7 +3,8 @@
   background: var(--r-bg); color: var(--r-fg);
   user-select: none; -webkit-user-select: none;
 }
-.reader-stage { position: absolute; top: var(--sat); bottom: var(--sab); left: var(--sal); right: var(--sar); }
+/* the page area keeps its size while the bars (and Android's system bars) overlay it */
+.reader-stage { position: absolute; top: var(--stage-t, var(--sat)); bottom: var(--stage-b, var(--sab)); left: var(--stage-l, var(--sal)); right: var(--stage-r, var(--sar)); }
 .reader-stage foliate-view { display: block; width: 100%; height: 100%; }
 .reader-stage foliate-view::part(head), .reader-stage foliate-view::part(foot) {
   font-family: var(--font-ui); font-size: 11.5px; letter-spacing: .02em; color: var(--r-muted); opacity: .85;

@@ -8,8 +8,10 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = workerUrl
 
 export { pdfjsLib }
 
-export const openPdf = (data: Uint8Array) => pdfjsLib.getDocument({
+/** `fontNames` also sends each font's name (bold, italic…) along with the page's drawing operators. */
+export const openPdf = (data: Uint8Array, { fontNames = false } = {}) => pdfjsLib.getDocument({
   data,
+  fontExtraProperties: fontNames,
   cMapUrl: publicUrl('pdfjs/cmaps/'),
   cMapPacked: true,
   standardFontDataUrl: publicUrl('pdfjs/standard_fonts/'),

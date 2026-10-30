@@ -4,9 +4,11 @@
 // keeps the place, bookmarks and highlights.
 import type { Annotation } from '../lib/db'
 import { openPdf } from '../lib/pdfjs'
+import type { Settings } from '../lib/settings'
+import type { ReaderTheme } from '../lib/themes'
 import type { FoliateRelocateDetail } from '../vendor/foliate-js/view.js'
 import { EpubEngine } from './epub-engine'
-import { FLOW_VERSION, PdfFlow } from './pdf-flow'
+import { FLOW_VERSION, flowCss, PdfFlow } from './pdf-flow'
 import { parsePdfLocator } from './pdf-locator'
 import type { EngineCallbacks, Relocation, SelectionInfo } from './types'
 
@@ -18,6 +20,8 @@ export class PdfFlowEngine extends EpubEngine {
   #title: string
   #flow?: PdfFlow
   #syncId = 0
+  /** where the book opens, readied before the first section is built */
+  #opening?: string
   /**
    * The page position last jumped to. A page often starts mid-paragraph, so the
    * screen showing it begins with the previous page's text; while the start of the
@@ -33,17 +37,20 @@ export class PdfFlowEngine extends EpubEngine {
   }
 
   protected async loadBook() {
-    const doc = await openPdf(this.#data)
+    const doc = await openPdf(this.#data, { fontNames: true })
     try {
       this.#flow = await PdfFlow.create(doc, this.#title)
     } catch (e) {
       doc.loadingTask.destroy()
       throw e
     }
+    const href = this.#opening && this.#hrefOf(this.#opening)
+    if (href) await this.#flow.prepare(href).catch(() => {})
     return this.#flow.book
   }
 
   async open(container: HTMLElement, location?: string) {
+    this.#opening = location
     await super.open(container, location)
     const flow = this.#flow
     if (!flow) return
@@ -56,14 +63,30 @@ export class PdfFlowEngine extends EpubEngine {
     this.#flow?.destroy()
   }
 
-  protected resolveTarget(target: string) {
+  protected bookStyles(s: Settings, theme: ReaderTheme) {
+    return super.bookStyles(s, theme) + flowCss(s, theme, this.#flow?.indented ?? false)
+  }
+
+  /** The page position (`p<page>…`) a stored locator points at, if it names one. */
+  #hrefOf(target: string) {
     const m = target.match(LOCATOR)
     const loc = m ? null : parsePdfLocator(target)
-    const href = m ? (m[3] != null ? `p${m[1]}y${m[3]}` : `p${m[1]}`) : loc ? `p${loc.p}t${loc.r[0]?.[1] ?? 0}` : /^p\d/.test(target) ? target : null
+    return m ? (m[3] != null ? `p${m[1]}y${m[3]}` : `p${m[1]}`) : loc ? `p${loc.p}t${loc.r[0]?.[1] ?? 0}` : /^p\d/.test(target) ? target : null
+  }
+
+  protected resolveTarget(target: string) {
+    const m = target.match(LOCATOR)
+    const href = this.#hrefOf(target)
     this.#intended = href
     // a CFI saved by this view is exact; anything else goes to the page position
     if (m?.[4] === FLOW_VERSION && m[5]) return m[5]
     return href ?? target
+  }
+
+  async goTo(target: string) {
+    const href = this.#hrefOf(target)
+    if (href) await this.#flow?.prepare(href).catch(() => {})
+    await super.goTo(target)
   }
 
   next() {
@@ -110,8 +133,8 @@ export class PdfFlowEngine extends EpubEngine {
     return { ...s, locator: JSON.stringify(loc), page: loc.p, fraction: flow.pageCount > 1 ? (loc.p - 1) / (flow.pageCount - 1) : 1 }
   }
 
-  protected onDocumentLoad(doc: Document, index: number) {
-    this.#flow?.decorate(doc, index).catch(e => console.warn('Figures failed', e))
+  protected onDocumentLoad(doc: Document) {
+    this.#flow?.decorate(doc).catch(e => console.warn('Figures failed', e))
   }
 
   /** Highlights are stored as page rectangles; each is drawn at the text it covers here. */

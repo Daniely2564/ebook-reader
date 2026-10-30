@@ -4,8 +4,14 @@
 /** A rectangle normalized to the page box: x, y, width, height in 0…1, top-down. */
 export type Rect4 = [number, number, number, number]
 
-/** A highlight: its page and one rectangle per line. Stored as JSON. */
-export interface PdfLocator { p: number; r: Rect4[] }
+/** The rectangles of a highlight on one page, one per line. */
+export interface PdfPart { p: number; r: Rect4[] }
+
+/**
+ * A highlight: its first page and rectangles, plus the following pages for one that
+ * runs across a page break. Stored as JSON.
+ */
+export interface PdfLocator extends PdfPart { next?: PdfPart[] }
 
 export const parsePdfLocator = (s: string): PdfLocator | null => {
   try {
@@ -14,6 +20,17 @@ export const parsePdfLocator = (s: string): PdfLocator | null => {
   } catch {
     return null
   }
+}
+
+/** Every page of a highlight with its rectangles, in page order. */
+export const locatorParts = (loc: PdfLocator): PdfPart[] => [{ p: loc.p, r: loc.r }, ...(loc.next ?? [])]
+
+/** A locator from the rectangles found on each page (pages without any are left out). */
+export const makePdfLocator = (byPage: Map<number, Rect4[]>): PdfLocator | null => {
+  const parts = [...byPage].filter(([, r]) => r.length).sort((a, b) => a[0] - b[0]).map(([p, r]) => ({ p, r: mergeRects(r) }))
+  if (!parts.length) return null
+  const [first, ...next] = parts
+  return next.length ? { ...first, next } : first
 }
 
 /** Merges per-glyph-run rectangles into one rectangle per line. */

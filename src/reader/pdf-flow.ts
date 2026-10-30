@@ -3,16 +3,19 @@
 // and theme. Every text run keeps its position on the original page, which lets
 // highlights and the reading position move between this view and the page view.
 //
-// The markup of a section depends only on the text of its pages, so documents
-// built for search and the one shown on screen always agree on CFIs. Figures
-// are found afterwards and added to the live document as CSS decorations.
+// The markup of a section depends only on the text and fonts of its pages (and of
+// the pages either side of it, where a paragraph runs across a section boundary),
+// so documents built for search and the one shown on screen always agree on CFIs.
+// Figures are found afterwards and added to the live document as CSS decorations.
 import type { PDFDocumentProxy, PDFPageProxy } from 'pdfjs-dist/legacy/build/pdf.mjs'
 import type { FoliateBook, FoliateTocItem } from '../vendor/foliate-js/view.js'
 import { pdfjsLib, resolveOutline, type PdfOutlineNode } from '../lib/pdfjs'
-import { mergeRects, parsePdfLocator, type PdfLocator, type Rect4 } from './pdf-locator'
+import type { Settings } from '../lib/settings'
+import type { ReaderTheme } from '../lib/themes'
+import { locatorParts, makePdfLocator, parsePdfLocator, type PdfLocator, type Rect4 } from './pdf-locator'
 
 /** Part of every stored flowing-text CFI; bump it when the generated markup changes. */
-export const FLOW_VERSION = 'f1'
+export const FLOW_VERSION = 'f2'
 
 export class FlowUnavailableError extends Error {
   name = 'FlowUnavailableError'
@@ -21,7 +24,20 @@ export class FlowUnavailableError extends Error {
 type Viewport = ReturnType<PDFPageProxy['getViewport']>
 
 /** One text item, in page units (top-down, scale 1). */
-interface Run { text: string; x0: number; x1: number; top: number; bottom: number; size: number }
+interface Run {
+  text: string
+  x0: number
+  x1: number
+  top: number
+  bottom: number
+  size: number
+  /** baseline */
+  y: number
+  /** pdf.js font id */
+  font: string
+  /** the font family the page view's text layer lays this run out in */
+  family: string
+}
 
 interface Line {
   /** indices into PageText.runs, with the separator to put before each */
@@ -32,6 +48,8 @@ interface Line {
   top: number
   bottom: number
   base: number
+  /** baseline of the line's main run */
+  y: number
   size: number
   text: string
 }
@@ -48,40 +66,133 @@ interface PageText {
 
 interface Block {
   lines: Line[]
-  kind: 'p' | 'h2' | 'h3'
+  kind: 'p' | 'h1' | 'h2' | 'h3' | 'h4'
   small: boolean
   center: boolean
+  /** starts with a bullet or a number */
+  list: boolean
   /** the last line runs to the right edge of its column */
   endsFull: boolean
+}
+
+/** Bold and italic flags of a page's fonts, by pdf.js font id. */
+type FontStyles = Map<string, number>
+
+/** What a page is measured against when it is split into blocks. */
+interface Layout {
+  bodySize: number
+  /** usual width of a line of body text */
+  measure: number
+  styles?: FontStyles
 }
 
 const MAX_SECTION_PAGES = 12
 const SAMPLE_PAGES = 16
 const CHARS_PER_MINUTE = 1100
+const BOLD = 1
+const ITALIC = 2
 
 const TERMINAL = /[.!?…:;"”’)\]]$/
-const BULLET = /^(?:[•●○■□▪▫◦‣∙·*–—-]|\(?\d{1,3}[.)]|\(?[a-z][.)]|\([ivx]{1,4}\))\s/i
+/** a list marker; capital letters only with a bracket, as "E. Lindqvist" is a name */
+const LIST_MARK = String.raw`(?:[•●○■□▪▫◦‣∙·*–—➢❖✓-]|\(?\d{1,3}[.)]|\(?[a-z][.)]|\(?[A-Z]\)|\([ivxIVX]{1,4}\))`
+const BULLET = new RegExp(`^${LIST_MARK}\\s`)
+/** a list marker standing alone in its own run */
+const MARKER = new RegExp(`^${LIST_MARK}$`)
+/** what a footnote starts with */
+const NOTE_MARK = /^(?:[*†‡§¶‖]|\(?\d{1,3}\)?[.)]?(?=\s|\p{Lu}|$)|\p{No})/u
 const PAGE_NUMBER = /^[\s\-–—([]*(?:page\s+|p\.\s*)?(?:\d{1,4}|[ivxlcdm]{1,7})(?:\s*(?:of|\/)\s*\d{1,4})?[\s\-–—)\].]*$/i
-const CJK = /[\u3000-\u9fff\uac00-\ud7af\uf900-\ufaff]/
+const CJK = /[　-鿿가-힯豈-﫿]/
 const HREF = /^p(\d+)(?:([ty])(-?[\d.]+))?$/
+const BOLD_FONT = /bold|black|heavy|semibold|demi|^cmbx?\d|^sfbx|[-,]bd|-medi(?!um)/i
+const ITALIC_FONT = /italic|oblique|ital|kursiv|^(?:cm|sf)(?:ti|sl|mi)\d|-\w*it$/i
+/** bullets that Symbol and Wingdings fonts leave in the Private Use Area */
+const PUA_BULLETS: Record<string, string> = { '': '•', '': '▪', '': '➢', '': '❖', '': '✓', '': '■', '': '●' }
 
+const HEADINGS = ['h1', 'h2', 'h3', 'h4']
 const FLOW_CSS = `
-h2, h3 { line-height: 1.25; margin: 1.3em 0 .55em; text-align: start; break-after: avoid; }
-h2 { font-size: 1.4em; }
-h3 { font-size: 1.15em; }
-p.s { font-size: .86em; }
-.fig-b::before, .fig-a::after {
-  content: ''; display: block; width: var(--fig-w); max-width: 100%; max-height: 82vh; aspect-ratio: var(--fig-ar);
-  margin: .9em auto; background: var(--fig) center / contain no-repeat; break-inside: avoid; text-indent: 0;
+h1, h2, h3, h4 {
+  line-height: 1.25; text-align: start; text-indent: 0; break-after: avoid; break-inside: avoid;
+  -webkit-hyphens: manual; hyphens: manual; text-wrap: balance;
 }
+h1 { font-size: 1.75em; margin: 1.1em 0 .85em; letter-spacing: -.01em; }
+h2 { font-size: 1.42em; margin: 1.5em 0 .6em; }
+h3 { font-size: 1.18em; margin: 1.45em 0 .5em; }
+h4 { font-size: 1em; margin: 1.35em 0 .4em; }
+${HEADINGS.flatMap(a => HEADINGS.map(b => `${a} + ${b}`)).join(', ')} { margin-top: .3em; }
+p.s { font-size: .88em; }
+p.n { font-size: .82em; }
+p.li { padding-inline-start: 1.4em; text-indent: -1.4em; text-align: start; }
+p.li > .m:first-child { display: inline-block; min-width: 1.15em; text-indent: 0; }
+.b { font-weight: bold; }
+.i { font-style: italic; }
+.sup, .sub { font-size: .7em; line-height: 0; }
+.sup { vertical-align: super; }
+.sub { vertical-align: sub; }
+.pg-c, .pg-blank.fig-b {
+  display: flex; flex-direction: column; justify-content: center; break-before: column; break-after: column;
+}
+.fig-b::before, .fig-a::after {
+  content: ''; display: block; max-width: 100%; max-height: 82vh;
+  margin: .9em auto; break-inside: avoid; text-indent: 0;
+}
+.fig-b::before { width: var(--fig-b-w); aspect-ratio: var(--fig-b-ar); background: var(--fig-b) center / contain no-repeat; }
+.fig-a::after { width: var(--fig-a-w); aspect-ratio: var(--fig-a-ar); background: var(--fig-a) center / contain no-repeat; }
 .fig-x { display: none !important; }
 `
+
+/**
+ * Reading styles that depend on the reader's settings and theme; the rest are in
+ * each section's own style sheet. `indented`: the PDF marks paragraphs with an indent.
+ */
+export const flowCss = (s: Settings, theme: ReaderTheme, indented: boolean) => {
+  const book = s.paragraphSpacing < 0
+  // without space between paragraphs, an indent is what shows where one starts
+  const indent = s.paragraphSpacing === 0 || (book && indented)
+  return `
+${book ? `p { margin: ${indented ? '0' : '.75em 0'}; }` : ''}
+${indent ? 'p + p:not([align]):not(.li):not(.s):not(.n) { text-indent: 1.5em; }' : ''}
+p.n { color: ${theme.muted}; }
+p:not(.n) + p.n { margin-top: 1.2em !important; padding-top: .6em; background: linear-gradient(${theme.border}, ${theme.border}) no-repeat left top / 30% 1px; }
+${s.fontWeight !== 400 ? `.b { font-weight: ${Math.min(900, s.fontWeight + 300)} !important; }` : ''}
+${s.flow === 'paginated' ? '.pg-c, .pg-blank.fig-b { min-height: calc(100vh - 2px); }' : '.pg-c { padding: 2.5em 0; }'}
+`
+}
 
 const esc = (s: string) => s.replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]!)
 const median = (xs: number[]) => (xs.length ? [...xs].sort((a, b) => a - b)[xs.length >> 1] : NaN)
 const sameSize = (a: Line, b: Line) => Math.abs(a.size - b.size) <= 0.12 * Math.max(a.size, b.size)
 const overlapX = (a: Line, b: Line) => Math.min(a.x1, b.x1) - Math.max(a.x0, b.x0) > 0.3 * Math.min(a.x1 - a.x0, b.x1 - b.x0)
 const edgeKey = (s: string) => s.toLowerCase().replace(/\d+/g, '#').replace(/[^\p{L}#]+/gu, ' ').trim()
+/** a title as running heads print it: no numbers, case or punctuation */
+const titleKey = (s: string) => edgeKey(s).replace(/#/g, ' ').replace(/\s+/g, ' ').trim()
+
+const fontStyle = (font: { name?: string; bold?: boolean; black?: boolean; italic?: boolean } | undefined) => {
+  if (!font) return 0
+  const name = (font.name ?? '').replace(/^[A-Z]{6}\+/, '')
+  return (font.bold || font.black || BOLD_FONT.test(name) ? BOLD : 0) | (font.italic || ITALIC_FONT.test(name) ? ITALIC : 0)
+}
+
+/** Share of the characters of some lines set in a bold font. */
+const boldShare = (pt: PageText, lines: Line[], styles: FontStyles | undefined) => {
+  let n = 0
+  let b = 0
+  for (const l of lines) for (const k of l.runs) {
+    const r = pt.runs[k]
+    n += r.text.length
+    if ((styles?.get(r.font) ?? 0) & BOLD) b += r.text.length
+  }
+  return n ? b / n : 0
+}
+
+let measurer: CanvasRenderingContext2D | null = null
+/** Width of a text in a font family, at 100px. */
+const measureText = (family: string, text: string) => {
+  measurer ??= document.createElement('canvas').getContext('2d')
+  if (!measurer) return text.length
+  const font = `100px ${family}`
+  if (measurer.font !== font) measurer.font = font
+  return measurer.measureText(text).width
+}
 
 const STOPWORDS: Record<string, string[]> = {
   en: ['the', 'and', 'of', 'to', 'in', 'is', 'that', 'it', 'was', 'for'],
@@ -114,6 +225,7 @@ const guessLanguage = (text: string) => {
 const extractPage = async (page: PDFPageProxy): Promise<PageText> => {
   const viewport = page.getViewport({ scale: 1 })
   const { items, styles } = await page.getTextContent()
+  const families = pdfjsLib.TextLayer.fontFamilyMap
   const runs: Run[] = []
   for (const item of items) {
     if (!('str' in item) || !item.str.trim() || !(item.width > 0)) continue
@@ -126,7 +238,11 @@ const extractPage = async (page: PDFPageProxy): Promise<PageText> => {
     if (size < 1) continue
     const ascent = style && style.ascent > 0 ? Math.min(1, style.ascent) : style && style.descent < 0 ? 1 + style.descent : 0.8
     const top = tx[5] - size * ascent
-    runs.push({ text: item.str.replace(/\s+/g, ' '), x0: tx[4], x1: tx[4] + item.width, top, bottom: top + size, size })
+    const family = style?.fontFamily || 'sans-serif'
+    runs.push({
+      text: item.str.replace(/\s+/g, ' '), x0: tx[4], x1: tx[4] + item.width, top, bottom: top + size, size, y: tx[5],
+      font: item.fontName, family: families.get(family) || family,
+    })
   }
   const lines = buildLines(runs, viewport.width)
   return { page: page.pageNumber, width: viewport.width, height: viewport.height, viewport, runs, lines, chars: lines.reduce((n, l) => n + l.text.length, 0) }
@@ -159,15 +275,23 @@ const buildLines = (runs: Run[], pageWidth: number) => {
         continue
       }
     }
-    line = { runs: [i], seps: [''], x0: r.x0, x1: r.x1, top: r.top, bottom: r.bottom, base: r.bottom, size: r.size, text: r.text }
+    line = { runs: [i], seps: [''], x0: r.x0, x1: r.x1, top: r.top, bottom: r.bottom, base: r.bottom, y: r.y, size: r.size, text: r.text }
     lines.push(line)
   }
   for (const l of lines) {
+    // a bullet drawn from a symbol font
+    const first = runs[l.runs[0]]
+    const bullet = PUA_BULLETS[first.text.trim()]
+    if (bullet && l.runs.length > 1) {
+      l.text = l.text.replace(first.text, bullet)
+      first.text = bullet
+    }
     // size and baseline come from the longest run, so superscripts don't count
-    let main = runs[l.runs[0]]
+    let main = first
     for (const k of l.runs) if (runs[k].text.length > main.text.length) main = runs[k]
     l.size = main.size
     l.base = main.bottom
+    l.y = main.y
     l.text = l.text.trim()
   }
   return lines.filter(l => l.text)
@@ -182,9 +306,10 @@ const edgeLines = (pt: PageText) => {
   return [...out]
 }
 
-/** Splits a page's lines into paragraphs and headings. */
-const segmentPage = (pt: PageText, lines: Line[], bodySize: number): Block[] => {
+/** Splits a page's lines into paragraphs and headings, counting how paragraphs are set apart into `stats`. */
+const segmentPage = (pt: PageText, lines: Line[], layout: Layout, stats?: { indent: number; gap: number }): Block[] => {
   if (!lines.length) return []
+  const { bodySize, styles } = layout
   const ratios: number[] = []
   for (let i = 1; i < lines.length; i++) {
     const dy = lines[i].base - lines[i - 1].base
@@ -198,7 +323,8 @@ const segmentPage = (pt: PageText, lines: Line[], bodySize: number): Block[] => 
       if (sameSize(l, lines[j]) && overlapX(l, lines[j])) r = Math.max(r, lines[j].x1)
     return r
   })
-  const body = lines.filter(l => Math.abs(l.size - bodySize) <= 0.12 * bodySize)
+  const isBody = (l: Line) => Math.abs(l.size - bodySize) <= 0.12 * bodySize
+  const body = lines.filter(isBody)
   const ref = body.length ? body : lines
   const bodyL = Math.min(...ref.map(l => l.x0))
   const bodyR = Math.max(...ref.map(l => l.x1))
@@ -227,12 +353,18 @@ const segmentPage = (pt: PageText, lines: Line[], bodySize: number): Block[] => 
     if (group) {
       const prev = lines[i - 1]
       const dy = line.base - prev.base
+      const gap = dy > (pitch * 1.4 + 0.1) * line.size
+      const indent = !BULLET.test(group.lines[0].text) && indented(i)
       brk = !sameSize(line, prev)
         // moved up: a new column, which continues the paragraph only mid-sentence
-        || (dy < -0.5 * line.size ? !(full[i - 1] && !TERMINAL.test(prev.text)) : dy > (pitch * 1.4 + 0.1) * line.size)
+        || (dy < -0.5 * line.size ? !(full[i - 1] && !TERMINAL.test(prev.text)) : gap)
         || BULLET.test(line.text)
         || endedBefore(i)
-        || (!BULLET.test(group.lines[0].text) && indented(i))
+        || indent
+      if (stats && dy > 0 && isBody(line) && isBody(prev) && !BULLET.test(line.text)) {
+        if (gap) stats.gap++
+        else if (indent) stats.indent++
+      }
     }
     if (brk) groups.push({ lines: [line], last: i })
     else {
@@ -241,76 +373,196 @@ const segmentPage = (pt: PageText, lines: Line[], bodySize: number): Block[] => 
     }
   }
 
+  // on a page set mostly in bold, bold doesn't stand out
+  const boldPage = !styles || boldShare(pt, lines, styles) > 0.6
   const center = (bodyL + bodyR) / 2
+  // on a title page there is no body text to measure against
+  const span = Math.max(bodyR - bodyL, Math.min(layout.measure, pt.width))
   return groups.map(({ lines: ls, last }) => {
     const ratio = ls[0].size / bodySize
-    const chars = ls.reduce((n, l) => n + l.text.length, 0)
-    const heading = ratio >= 1.18 && chars < 200 && ls.length <= 4
+    const count = ls.reduce((n, l) => n + l.text.length, 0)
+    const list = BULLET.test(ls[0].text)
+    const bold = !boldPage && ls.every(l => boldShare(pt, [l], styles) > 0.85)
+    let kind: Block['kind'] = 'p'
+    if (!list && count < 200 && ls.length <= 4) {
+      if (ratio >= 1.18 || (bold && ratio >= 1.05)) kind = ratio >= 1.75 ? 'h1' : ratio >= 1.4 ? 'h2' : 'h3'
+      // a bold line at the size of the text is a heading, unless it reads like a sentence
+      else if (bold && ratio > 0.9 && ls.length <= 2 && count <= 120 && !/[.,;:]$/.test(ls[ls.length - 1].text)) kind = 'h4'
+    }
     return {
       lines: ls,
-      kind: heading ? (ratio >= 1.5 ? 'h2' : 'h3') : 'p',
+      kind,
       small: ratio <= 0.86,
-      center: ls.every(l => Math.abs((l.x0 + l.x1) / 2 - center) < 0.025 * pt.width && l.x1 - l.x0 < 0.8 * (bodyR - bodyL)),
+      // every line centered, and one short enough to show it (full justified lines are centered too)
+      center: ls.every(l => {
+        const mid = (l.x0 + l.x1) / 2
+        return Math.abs(mid - center) < 0.025 * pt.width || Math.abs(mid - pt.width / 2) < 0.025 * pt.width
+      }) && ls.some(l => l.x1 - l.x0 < 0.8 * span),
+      list,
       endsFull: full[last],
     }
   })
 }
 
+/** Whether a block at the top of a page carries on the paragraph that ended the previous page. */
+const continues = (prev: Block, last: Line, next: Block) =>
+  prev.kind === 'p' && next.kind === 'p' && prev.small === next.small && sameSize(last, next.lines[0]) && !next.list
+  && ((prev.endsFull && !TERMINAL.test(last.text)) || /^\p{Ll}/u.test(next.lines[0].text))
+
+/** Index of the first footnote among the small blocks at the foot of a page, or the number of blocks. */
+const footnotesFrom = (pt: PageText, blocks: Block[]) => {
+  let i = blocks.length
+  while (i > 0 && blocks[i - 1].small && blocks[i - 1].kind === 'p' && blocks[i - 1].lines[0].top > 0.5 * pt.height) i--
+  while (i < blocks.length && !NOTE_MARK.test(blocks[i].lines[0].text)) i++
+  // small print filling the whole page (an index, references) isn't notes
+  return i < blocks.length && blocks.slice(0, i).some(b => !b.small) ? i : blocks.length
+}
+
 /** A paragraph being assembled; it may continue onto the next page. */
 interface OpenBlock {
   block: Block
-  parts: ({ k: string; text: string } | string)[]
+  parts: ({ k: string; text: string; cls: string } | string)[]
   attrs: string
   last: Line
 }
 
 const render = (b: OpenBlock) => {
   const tag = b.block.kind
-  const inner = b.parts.map(p => (typeof p === 'string' ? p : `<span data-k="${p.k}">${esc(p.text)}</span>`)).join('')
+  const inner = b.parts.map(p => (typeof p === 'string' ? p : `<span data-k="${p.k}"${p.cls ? ` class="${p.cls}"` : ''}>${esc(p.text)}</span>`)).join('')
   return `<${tag}${b.attrs}>${inner}</${tag}>`
 }
 
-/** Appends a line's runs to a paragraph, joining words split by a hyphen at the line end. */
-const appendLine = (b: OpenBlock, pt: PageText, line: Line, first: boolean) => {
+/**
+ * Appends a line's runs to a paragraph, joining words split by a hyphen at the line
+ * end. Runs keep their emphasis and raised or lowered position.
+ */
+const appendLine = (b: OpenBlock, pt: PageText, line: Line, first: boolean, styles: FontStyles | undefined, bold: boolean, hidden: Set<number>) => {
   line.runs.forEach((k, j) => {
-    let text = pt.runs[k].text
+    const run = pt.runs[k]
+    let text = run.text
     if (j === 0) text = text.trimStart()
     if (j === line.runs.length - 1) text = text.trimEnd()
     if (!text) return
     if (j === 0 && !first) {
       const prev = [...b.parts].reverse().find(p => typeof p !== 'string') as { text: string } | undefined
-      if (prev && /[-\u00ad]$/.test(prev.text) && /^\p{Ll}/u.test(text)) prev.text = prev.text.slice(0, -1)
+      if (prev && /[-­]$/.test(prev.text) && /^\p{Ll}/u.test(text)) prev.text = prev.text.slice(0, -1)
       else if (!(prev && CJK.test(prev.text.slice(-1)) && CJK.test(text[0]))) b.parts.push(' ')
     } else if (line.seps[j]) b.parts.push(line.seps[j])
-    b.parts.push({ k: `${pt.page}.${k}`, text })
+    const style = styles?.get(run.font) ?? 0
+    const small = run.size < 0.85 * line.size
+    const cls = [
+      bold && style & BOLD && 'b',
+      style & ITALIC && 'i',
+      small && line.y - run.y > 0.2 * line.size && 'sup',
+      small && run.y - line.y > 0.1 * line.size && 'sub',
+      first && j === 0 && b.block.list && MARKER.test(text) && 'm',
+      hidden.has(k) && 'fig-x',
+    ].filter(Boolean).join(' ')
+    b.parts.push({ k: `${pt.page}.${k}`, text, cls })
   })
   b.last = line
 }
 
+/** A figure drawn before or after a block, by the block's pseudo-element. */
+interface Figure { block: number; where: 'before' | 'after'; box: Rect4 }
+
+/**
+ * Class and attributes that draw figures next to an element. Their space is in the
+ * markup, so the page doesn't move when the image arrives (`decorate()` fills it in).
+ */
+const figureAttrs = (pt: PageText, figs: Figure[]) => {
+  if (!figs.length) return { cls: '', attrs: '' }
+  const colWidth = Math.max(...pt.lines.map(l => l.x1 - l.x0), pt.width * 0.5)
+  const vars = figs.map(({ where, box }) => {
+    const s = where === 'before' ? 'b' : 'a'
+    return `--fig-${s}-ar: ${(box[2] * pt.width).toFixed(1)} / ${(box[3] * pt.height).toFixed(1)}; --fig-${s}-w: ${Math.min(100, box[2] * pt.width / colWidth * 100).toFixed(1)}%`
+  })
+  return {
+    cls: figs.map(f => (f.where === 'before' ? 'fig-b' : 'fig-a')).join(' '),
+    attrs: ` style="${vars.join('; ')}" data-fig="${figs.map(f => `${f.where[0]}${pt.page}:${f.box.map(v => v.toFixed(4)).join(',')}`).join(' ')}"`,
+  }
+}
+
+/**
+ * Places a page's figures: the text inside one (axis labels, legends) is hidden, and
+ * each is drawn before the nearest block below it, or after the last block.
+ */
+const placeFigures = (pt: PageText, blocks: Block[], regions: Rect4[]) => {
+  const hidden = new Set<number>()
+  const figures: Figure[] = []
+  if (!regions.length) return { hidden, figures }
+  const inside = (run: Run, [x, y, w, h]: Rect4) => {
+    const cx = (run.x0 + run.x1) / 2 / pt.width
+    const cy = (run.top + run.bottom) / 2 / pt.height
+    return cx >= x - 0.004 && cx <= x + w + 0.004 && cy >= y - 0.004 && cy <= y + h + 0.004
+  }
+  const spots: { block: number; top: number; x0: number; x1: number }[] = []
+  blocks.forEach((b, block) => {
+    let spot: (typeof spots)[number] | null = null
+    for (const l of b.lines) for (const k of l.runs) {
+      const run = pt.runs[k]
+      if (regions.some(r => inside(run, r))) {
+        hidden.add(k)
+        continue
+      }
+      const [top, x0, x1] = [run.top / pt.height, run.x0 / pt.width, run.x1 / pt.width]
+      if (!spot) spots.push(spot = { block, top, x0, x1 })
+      else Object.assign(spot, { top: Math.min(spot.top, top), x0: Math.min(spot.x0, x0), x1: Math.max(spot.x1, x1) })
+    }
+  })
+  for (const r of regions) {
+    const below = spots.filter(b => b.top >= r[1] + r[3] - 0.01)
+    const hit = below.find(b => b.x1 > r[0] && b.x0 < r[0] + r[2]) ?? below[0]
+    // with no text left on the page, the figure goes before its first block (or its marker)
+    const block = (hit ?? spots[spots.length - 1])?.block ?? 0
+    const where = hit || !spots.length ? 'before' : 'after'
+    const prev = figures.find(f => f.block === block && f.where === where)
+    if (!prev) figures.push({ block, where, box: [...r] })
+    else {
+      // figures that land in the same place become one image
+      const [x, y, w, h] = prev.box
+      const x0 = Math.min(x, r[0])
+      const y0 = Math.min(y, r[1])
+      prev.box = [x0, y0, Math.max(x + w, r[0] + r[2]) - x0, Math.max(y + h, r[1] + r[3]) - y0]
+    }
+  }
+  return { hidden, figures }
+}
+
 /** A page without text still gets a marker, so every page stays addressable. */
-const blankPage = (n: number) => `<div class="pg-blank" id="p${n}" data-p="${n}" data-t="0"></div>`
+const blankPage = (n: number, fig = { cls: '', attrs: '' }) => `<div class="pg-blank${fig.cls ? ` ${fig.cls}` : ''}" id="p${n}" data-p="${n}" data-t="0"${fig.attrs}></div>`
 
 export class PdfFlow {
   book!: FoliateBook
   readonly pageCount: number
   /** first pages of chapters, from the outline */
   chapterStarts: number[] = []
+  /** the PDF sets paragraphs apart with a first-line indent rather than space */
+  indented = false
 
   #doc: PDFDocumentProxy
   #title: string
   #labels: string[] | null = null
   #avgChars = 1500
   #bodySize = 10
+  #measure = 300
   #sampleEdges = new Map<string, Set<number>>()
   #samplePages = new Set<number>()
+  #titleKeys = new Set<string>()
+  /** top of the first chapter heading on each chapter's first page, in PDF user space */
+  #chapterTops = new Map<number, number>()
   #sections: { start: number; end: number; title: string }[] = []
   #pages = new Map<number, Promise<PageText>>()
   /** pages whose text has been extracted, for synchronous lookups */
   #ready = new Map<number, PageText>()
+  #ops = new Map<number, Promise<{ styles: FontStyles; regions: Rect4[] }>>()
+  #carries = new Map<number, Promise<Set<Line>>>()
+  /** bottom (0…1) of the lines at the top of a section's first page that went to the section before */
+  #carryEnds = new Map<number, number>()
   #html = new Map<number, Promise<string>>()
   #docs = new Map<number, Promise<Document>>()
   #urls = new Map<number, string>()
-  #regions = new Map<number, Promise<Rect4[]>>()
+  #edges = new Map<string, Float64Array>()
   #crops = new Map<string, Promise<string | null>>()
   #blobUrls: string[] = []
   #destroyed = false
@@ -353,15 +605,35 @@ export class PdfFlow {
         break
       }
     }
+    const bodyLines = texts.flatMap(t => t.lines.filter(l => Math.abs(l.size - this.#bodySize) <= 0.12 * this.#bodySize))
+    this.#measure = median(bodyLines.map(l => l.x1 - l.x0)) || 0.7 * (texts[0]?.width ?? 600)
     for (const t of texts) {
       this.#samplePages.add(t.page)
       for (const l of edgeLines(t)) this.#countEdge(this.#sampleEdges, l, t.page)
     }
+    const titles: string[] = [this.#title]
+    const walk = (nodes: PdfOutlineNode[]) => nodes.forEach(o => {
+      titles.push(o.title)
+      walk(o.items)
+    })
+    walk(outline)
+    this.#titleKeys = new Set(titles.map(titleKey).filter(k => k.length >= 4))
+    // does the PDF set paragraphs apart with an indent or with space?
+    const stats = { indent: 0, gap: 0 }
+    for (const t of texts) segmentPage(t, t.lines.filter(l => !this.#isRunningHead(l)), this.#layout(), stats)
+    this.indented = stats.indent > stats.gap
 
     const top = outline.filter(o => o.page)
     let chapterNodes = top
     if (new Set(top.map(o => o.page)).size < 3) chapterNodes = [...top, ...top.flatMap(o => o.items.filter(c => c.page))]
     this.chapterStarts = [...new Set(chapterNodes.map(o => o.page!))].sort((a, b) => a - b)
+    // a chapter starting lower on a page: what is above its heading ends the chapter before
+    const unknown = new Set<number>()
+    for (const o of chapterNodes) {
+      if (o.top == null) unknown.add(o.page!)
+      else this.#chapterTops.set(o.page!, Math.max(o.top, this.#chapterTops.get(o.page!) ?? -Infinity))
+    }
+    for (const p of unknown) this.#chapterTops.delete(p)
     this.#sections = this.#partition(outline)
     this.book = {
       metadata: {
@@ -381,6 +653,10 @@ export class PdfFlow {
       getTOCFragment: (doc, href) => this.anchor(doc, href),
       isExternal: () => false,
     }
+  }
+
+  #layout(styles?: FontStyles): Layout {
+    return { bodySize: this.#bodySize, measure: this.#measure, styles }
   }
 
   #partition(outline: PdfOutlineNode[]) {
@@ -430,14 +706,46 @@ export class PdfFlow {
     return p
   }
 
+  /** Font styles and figures of a page, from its drawing operators. */
+  #pageOps(n: number) {
+    let p = this.#ops.get(n)
+    if (!p) {
+      p = this.#readOps(n).catch(() => ({ styles: new Map(), regions: [] as Rect4[] }))
+      this.#ops.set(n, p)
+    }
+    return p
+  }
+
+  async #styles(n: number) {
+    return (await this.#pageOps(n)).styles
+  }
+
   sectionOf(page: number) {
     const i = this.#sections.findIndex(s => page <= s.end)
     return i < 0 ? this.#sections.length - 1 : i
   }
 
+  /** The section holding a position: the top of a section's first page may have gone to the section before. */
+  #sectionAt(page: number, t: number) {
+    const i = this.sectionOf(page)
+    return i > 0 && this.#sections[i].start === page && t < (this.#carryEnds.get(page) ?? 0) ? i - 1 : i
+  }
+
   #sectionOfHref(href: string) {
     const m = href.match(HREF)
-    return m ? this.sectionOf(Number(m[1])) : 0
+    if (!m) return 0
+    // a bare page (a bookmark, a chapter without a position) opens with the page's own section
+    const place = m[2] ? this.placeOf(href) : null
+    return place ? this.#sectionAt(place.page, place.t) : this.sectionOf(Number(m[1]))
+  }
+
+  /** Readies what is needed to place a position exactly, before going to it. */
+  async prepare(href: string) {
+    const place = this.placeOf(href)
+    if (!place) return
+    await this.#page(place.page)
+    const i = this.sectionOf(place.page)
+    if (i > 0 && this.#sections[i].start === place.page) await this.#carry(place.page)
   }
 
   pageLabel(page: number) {
@@ -483,57 +791,153 @@ export class PdfFlow {
     set.add(page)
   }
 
+  /** Running heads that can be told from the line alone and the sample of pages. */
+  #isRunningHead(l: Line) {
+    if (PAGE_NUMBER.test(l.text) && l.size <= this.#bodySize * 1.3) return true
+    const inSample = this.#sampleEdges.get(edgeKey(l.text))?.size ?? 0
+    if (inSample >= 3 && inSample >= 0.25 * this.#samplePages.size) return true
+    // the book's or a chapter's title in small print
+    return l.size <= this.#bodySize * 0.95 && this.#titleKeys.has(titleKey(l.text))
+  }
+
+  /**
+   * Lines at the top of a section's first page that belong to the section before: the
+   * rest of a paragraph running on from the previous page, and whatever is above the
+   * heading of a chapter that starts lower on the page. Both sections ask this, so
+   * it depends only on the two pages.
+   */
+  #carry(p: number) {
+    let c = this.#carries.get(p)
+    if (!c) {
+      c = this.#findCarry(p)
+      this.#carries.set(p, c)
+    }
+    return c
+  }
+
+  async #findCarry(p: number) {
+    const [prev, cur, prevStyles, curStyles] = await Promise.all([this.#page(p - 1), this.#page(p), this.#styles(p - 1), this.#styles(p)])
+    const edges = new Map<string, Set<number>>()
+    for (const pt of [prev, cur]) for (const l of edgeLines(pt)) this.#countEdge(edges, l, pt.page)
+    const content = (pt: PageText) => {
+      const heads = new Set(edgeLines(pt).filter(l => this.#isRunningHead(l) || (edges.get(edgeKey(l.text))?.size ?? 0) > 1))
+      return pt.lines.filter(l => !heads.has(l))
+    }
+    const lines = content(cur)
+    const carry = new Set<Line>()
+    const top = this.#chapterTops.get(p)
+    if (top != null) {
+      const y = cur.viewport.convertToViewportPoint(0, top)[1]
+      for (const l of lines) if (l.bottom <= y + 1) carry.add(l)
+    }
+    const before = segmentPage(prev, content(prev), this.#layout(prevStyles))
+    const last = before[footnotesFrom(prev, before) - 1]
+    const [first] = segmentPage(cur, lines.filter(l => !carry.has(l)), this.#layout(curStyles))
+    if (last && first && continues(last, last.lines[last.lines.length - 1], first)) for (const l of first.lines) carry.add(l)
+    if (carry.size) this.#carryEnds.set(p, Math.max(...[...carry].map(l => l.bottom / cur.height)))
+    return carry
+  }
+
   async #build(index: number) {
     const { start, end, title } = this.#sections[index]
-    const pages = await Promise.all(Array.from({ length: end - start + 1 }, (_, i) => this.#page(start + i)))
+    const next = index + 1 < this.#sections.length ? end + 1 : 0
+    const [pages, pageOps, carryIn, carryOut, nextPage, nextStyles] = await Promise.all([
+      Promise.all(Array.from({ length: end - start + 1 }, (_, i) => this.#page(start + i))),
+      Promise.all(Array.from({ length: end - start + 1 }, (_, i) => this.#pageOps(start + i))),
+      index > 0 ? this.#carry(start) : null,
+      next ? this.#carry(next) : null,
+      next ? this.#page(next) : null,
+      next ? this.#styles(next) : null,
+    ])
     // running heads repeat across the sample or across this section; nothing else is
     // considered, so the markup of a section never depends on what was built before
     const local = new Map<string, Set<number>>()
     for (const pt of pages) for (const l of edgeLines(pt)) this.#countEdge(local, l, pt.page)
     const isRunningHead = (l: Line) => {
-      if (PAGE_NUMBER.test(l.text) && l.size <= this.#bodySize * 1.3) return true
-      const key = edgeKey(l.text)
-      const inSection = local.get(key)?.size ?? 0
-      const inSample = this.#sampleEdges.get(key)?.size ?? 0
-      return (inSection >= 2 && inSection >= 0.4 * pages.length) || (inSample >= 3 && inSample >= 0.25 * this.#samplePages.size)
+      const inSection = local.get(edgeKey(l.text))?.size ?? 0
+      return (inSection >= 2 && inSection >= 0.4 * pages.length) || this.#isRunningHead(l)
     }
+    const parts = pages.map((pt, i) => {
+      const heads = new Set(edgeLines(pt).filter(isRunningHead))
+      const lines = pt.lines.filter(l => !heads.has(l) && !(i === 0 && carryIn?.has(l)))
+      return { pt, styles: pageOps[i].styles, regions: pageOps[i].regions, lines, carried: false }
+    })
+    // the start of the next section's first page that finishes this one
+    if (nextPage && carryOut?.size) parts.push({ pt: nextPage, styles: nextStyles!, regions: [], lines: nextPage.lines.filter(l => carryOut.has(l)), carried: true })
 
     const out: string[] = []
     let open: OpenBlock | null = null
+    // footnotes wait for the paragraph that runs on past them to end
+    let notes: string[] = []
     const close = () => {
       if (open) out.push(render(open))
       open = null
+      out.push(...notes)
+      notes = []
     }
-    for (const pt of pages) {
-      const heads = new Set(edgeLines(pt).filter(isRunningHead))
-      const blocks = segmentPage(pt, pt.lines.filter(l => !heads.has(l)), this.#bodySize)
+    for (const { pt, styles, regions, lines, carried } of parts) {
+      const blocks = segmentPage(pt, lines, this.#layout(styles))
+      const { hidden, figures } = placeFigures(pt, blocks, regions)
+      const figs = (i: number) => figureAttrs(pt, figures.filter(f => f.block === i))
       if (!blocks.length) {
-        close()
-        out.push(blankPage(pt.page))
+        if (!carried) {
+          close()
+          out.push(blankPage(pt.page, figs(0)))
+        }
         continue
       }
+      const cur = open as OpenBlock | null
+      const goesOn = !!cur && continues(cur.block, cur.last, blocks[0])
+      // a page with a few lines to show off (a title page, a part title) gets a page to itself, centered
+      const display = !carried && !goesOn && this.#isDisplayPage(blocks)
+      if (display) {
+        close()
+        out.push('<div class="pg-c">')
+      }
+      const notesFrom = footnotesFrom(pt, blocks)
+      // bold is kept where it stands out from the text around it
+      const bold = boldShare(pt, lines, styles) <= 0.6
       blocks.forEach((block, i) => {
         const t = (block.lines[0].top / pt.height).toFixed(4)
         const cur = open as OpenBlock | null
-        const continues = i === 0 && cur && cur.block.kind === 'p' && block.kind === 'p' && cur.block.small === block.small
-          && sameSize(cur.last, block.lines[0]) && !BULLET.test(block.lines[0].text)
-          && ((cur.block.endsFull && !TERMINAL.test(cur.last.text)) || /^\p{Ll}/u.test(block.lines[0].text))
-        if (cur && continues) {
-          cur.parts.push(`<span class="pg" id="p${pt.page}" data-p="${pt.page}" data-t="${t}"></span>`)
-          block.lines.forEach(l => appendLine(cur, pt, l, false))
+        const fig = figs(i)
+        if (cur && i === 0 && goesOn) {
+          // a paragraph running on from the previous page: this page's figures go at its marker
+          cur.parts.push(`<span class="pg${fig.cls ? ` ${fig.cls}` : ''}" id="p${pt.page}" data-p="${pt.page}" data-t="${t}"${fig.attrs}></span>`)
+          block.lines.forEach(l => appendLine(cur, pt, l, false, styles, bold, hidden))
           cur.block = { ...cur.block, endsFull: block.endsFull }
           return
         }
-        close()
-        const cls = block.small && block.kind === 'p' ? ' class="s"' : ''
+        const note = i >= notesFrom
+        const cls = [block.small && block.kind === 'p' && 's', note && 'n', block.list && !note && 'li', fig.cls].filter(Boolean).join(' ')
         const id = i === 0 ? ` id="p${pt.page}"` : ''
-        const b: OpenBlock = { block, parts: [], attrs: `${id} data-p="${pt.page}" data-t="${t}"${cls}${block.center ? ' align="center"' : ''}`, last: block.lines[0] }
-        block.lines.forEach((l, j) => appendLine(b, pt, l, j === 0))
-        open = b
+        const b: OpenBlock = { block, parts: [], attrs: `${id} data-p="${pt.page}" data-t="${t}"${cls ? ` class="${cls}"` : ''}${block.center ? ' align="center"' : ''}${fig.attrs}`, last: block.lines[0] }
+        block.lines.forEach((l, j) => appendLine(b, pt, l, j === 0, styles, bold && block.kind === 'p', hidden))
+        if (note && cur && cur.block.kind === 'p' && !cur.block.small) notes.push(render(b))
+        else {
+          close()
+          open = b
+        }
       })
+      if (display) {
+        close()
+        out.push('</div>')
+      }
     }
     close()
     return `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${esc(title)}</title><style>${FLOW_CSS}</style></head><body>\n${out.join('\n')}\n</body></html>`
+  }
+
+  /** A page of a few lines, mostly centered, headings or small print: a title page, a part title, a copyright page. */
+  #isDisplayPage(blocks: Block[]) {
+    let chars = 0
+    let shown = 0
+    for (const b of blocks) {
+      const n = b.lines.reduce((m, l) => m + l.text.length, 0)
+      chars += n
+      if (b.center || b.small || b.kind !== 'p') shown += n
+    }
+    return blocks.length <= 8 && chars < Math.min(600, 0.35 * this.#avgChars) && shown >= 0.6 * chars
   }
 
   // ---------------------------------------------------------------- positions
@@ -551,10 +955,19 @@ export class PdfFlow {
     return { page, t }
   }
 
-  /** The element at a position on a page (the paragraph or page marker at or above it). */
+  /**
+   * The element at a position on a page: the run of text on the line at or below it,
+   * so the screen shown starts where the reader was, not at the top of the paragraph
+   * (or else the paragraph or page marker at or above it).
+   */
   anchor(doc: Document, href: string): HTMLElement | null {
     const place = this.placeOf(href)
     if (!place) return null
+    const pt = this.#ready.get(place.page)
+    if (pt) for (const span of doc.querySelectorAll<HTMLElement>(`[data-k^="${place.page}."]`)) {
+      const run = pt.runs[Number(span.dataset.k!.split('.')[1])]
+      if (run && run.bottom / pt.height > place.t + 0.002 && !span.classList.contains('fig-x')) return span
+    }
     let best: HTMLElement | null = null
     for (const el of doc.querySelectorAll<HTMLElement>(`[data-p="${place.page}"]`)) {
       // stop at the first element below the position (later ones may be in the next column)
@@ -617,6 +1030,38 @@ export class PdfFlow {
     return Math.max(0, this.pageCount + 1 - page - t) * this.#avgChars / CHARS_PER_MINUTE
   }
 
+  /**
+   * Where each character of a run starts and ends on the page, laid out the way the
+   * page view's text layer lays it out (the run's width shared out in proportion to
+   * the glyphs of its stand-in font), so a highlight lands on the same letters in
+   * both views.
+   */
+  #runEdges(page: number, k: number) {
+    const key = `${page}.${k}`
+    let edges = this.#edges.get(key)
+    if (!edges) {
+      const run = this.#ready.get(page)!.runs[k]
+      const { text } = run
+      const total = measureText(run.family, text)
+      edges = new Float64Array(text.length + 1)
+      for (let i = 0; i <= text.length; i++)
+        edges[i] = run.x0 + (run.x1 - run.x0) * (total > 0 ? measureText(run.family, text.slice(0, i)) / total : i / text.length)
+      this.#edges.set(key, edges)
+    }
+    return edges
+  }
+
+  /** The run behind a span, and where the span's text starts in it (a line's first run loses its leading space). */
+  #spanRun(span: HTMLElement) {
+    const [page, k] = span.dataset.k!.split('.').map(Number)
+    const pt = this.#ready.get(page)
+    const run = pt?.runs[k]
+    const text = span.firstChild
+    if (!pt || !run || !text || text.nodeType !== Node.TEXT_NODE) return null
+    const lead = /^\s/.test((text as Text).data) ? 0 : run.text.length - run.text.trimStart().length
+    return { page, k, pt, run, text: text as Text, lead }
+  }
+
   /** Maps a selection to page rectangles, the same locator the page view stores. */
   locatorFor(range: Range): PdfLocator | null {
     const root = range.commonAncestorContainer
@@ -626,48 +1071,53 @@ export class PdfFlow {
     const spans = own ? [own as HTMLElement] : [...scope.querySelectorAll<HTMLElement>('[data-k]')].filter(s => range.intersectsNode(s))
     const byPage = new Map<number, Rect4[]>()
     for (const span of spans) {
-      const text = span.firstChild
-      if (!text || text.nodeType !== Node.TEXT_NODE) continue
-      const len = (text as Text).length
+      const sr = this.#spanRun(span)
+      if (!sr) continue
+      const { page, k, pt, run, text, lead } = sr
       const a = range.startContainer === text ? range.startOffset : 0
-      const b = range.endContainer === text ? range.endOffset : len
-      const [page, k] = span.dataset.k!.split('.').map(Number)
-      const pt = this.#ready.get(page)
-      const run = pt?.runs[k]
-      if (!pt || !run || b <= a || !len) continue
-      const w = run.x1 - run.x0
+      const b = range.endContainer === text ? range.endOffset : text.length
+      if (b <= a) continue
+      const edges = this.#runEdges(page, k)
+      const x0 = edges[Math.min(run.text.length, a + lead)]
+      const x1 = edges[Math.min(run.text.length, b + lead)]
       const list = byPage.get(page) ?? []
-      list.push([(run.x0 + w * a / len) / pt.width, run.top / pt.height, w * (b - a) / len / pt.width, run.size / pt.height])
+      list.push([x0 / pt.width, run.top / pt.height, (x1 - x0) / pt.width, run.size / pt.height])
       byPage.set(page, list)
     }
-    if (!byPage.size) return null
-    const first = Math.min(...byPage.keys())
-    return { p: first, r: mergeRects(byPage.get(first)!) }
+    return makePdfLocator(byPage)
   }
 
   /** The text a page locator covers, as a range in a section document. */
   rangeFor(doc: Document, loc: PdfLocator): Range | null {
-    const pt = this.#ready.get(loc.p)
-    if (!pt) return null
     let start: [Text, number] | null = null
     let end: [Text, number] | null = null
-    for (const span of doc.querySelectorAll<HTMLElement>(`[data-k^="${loc.p}."]`)) {
-      const run = pt.runs[Number(span.dataset.k!.split('.')[1])]
-      const text = span.firstChild as Text | null
-      if (!run || !text || text.nodeType !== Node.TEXT_NODE) continue
-      const cy = (run.top + run.bottom) / 2
-      for (const [x, y, w, h] of loc.r) {
-        const rx0 = x * pt.width
-        const rx1 = (x + w) * pt.width
-        if (cy < y * pt.height || cy > (y + h) * pt.height || run.x1 <= rx0 || run.x0 >= rx1) continue
-        const len = text.length
-        const rw = run.x1 - run.x0
-        const a = Math.max(0, Math.min(len, Math.round((rx0 - run.x0) / rw * len)))
-        const b = Math.max(a, Math.min(len, Math.round((rx1 - run.x0) / rw * len)))
-        if (b <= a) continue
-        start ??= [text, a]
-        end = [text, b]
-        break
+    for (const { p, r } of locatorParts(loc)) {
+      const pt = this.#ready.get(p)
+      if (!pt) continue
+      for (const span of doc.querySelectorAll<HTMLElement>(`[data-k^="${p}."]`)) {
+        const sr = this.#spanRun(span)
+        if (!sr) continue
+        const { k, run, text, lead } = sr
+        const cy = (run.top + run.bottom) / 2
+        for (const [x, y, w, h] of r) {
+          const rx0 = x * pt.width
+          const rx1 = (x + w) * pt.width
+          if (cy < y * pt.height || cy > (y + h) * pt.height || run.x1 <= rx0 || run.x0 >= rx1) continue
+          // the characters whose middle is inside the rectangle
+          const edges = this.#runEdges(p, k)
+          let a = -1
+          let b = -1
+          for (let i = lead; i < Math.min(run.text.length, lead + text.length); i++) {
+            const mid = (edges[i] + edges[i + 1]) / 2
+            if (mid < rx0 || mid > rx1) continue
+            if (a < 0) a = i - lead
+            b = i + 1 - lead
+          }
+          if (a < 0) continue
+          start ??= [text, a]
+          end = [text, b]
+          break
+        }
       }
     }
     if (!start || !end) return null
@@ -681,99 +1131,42 @@ export class PdfFlow {
   async cfiFor(locator: string, getCFI: (index: number, range: Range) => string) {
     const loc = parsePdfLocator(locator)
     if (!loc) return null
+    await this.#page(loc.p)
     const index = this.sectionOf(loc.p)
-    const range = this.rangeFor(await this.document(index), loc)
-    return range ? getCFI(index, range) : null
+    // text at the top of a section's first page may be in the section before
+    const tries = index > 0 && this.#sections[index].start === loc.p ? [index, index - 1] : [index]
+    for (const i of tries) {
+      const range = this.rangeFor(await this.document(i), loc)
+      if (range) return getCFI(i, range)
+    }
+    return null
   }
 
   // ---------------------------------------------------------------- figures
   /**
-   * Adds the images and drawings of a section's pages to its live document. The
-   * text that belongs to a figure (axis labels, legends) is hidden, and each figure
-   * is drawn by a pseudo-element of the nearest paragraph, so the DOM (and every
-   * CFI) stays the same.
+   * Draws the images and drawings of a section's pages into the spaces its markup
+   * keeps for them (see `figureAttrs()`).
    */
-  async decorate(doc: Document, index: number) {
-    const { start, end } = this.#sections[index]
-    for (let p = start; p <= end; p++) {
-      if (this.#destroyed || !doc.defaultView) return
-      const [pt, regions] = await Promise.all([this.#page(p), this.#figureRegions(p).catch(() => [] as Rect4[])])
-      if (!regions.length || !doc.defaultView) continue
-      const placed = this.#place(doc, pt, regions)
-      const figures = await Promise.all(placed.map(async f => ({ ...f, url: await this.#crop(p, f.box) })))
-      if (!doc.defaultView) return
-      for (const { el, where, box, url } of figures) {
-        if (!url) continue
-        const colWidth = Math.max(...pt.lines.map(l => l.x1 - l.x0), pt.width * 0.5)
-        el.classList.add(where === 'before' ? 'fig-b' : 'fig-a')
-        el.style.setProperty('--fig', `url("${url}")`)
-        el.style.setProperty('--fig-ar', `${(box[2] * pt.width).toFixed(1)} / ${(box[3] * pt.height).toFixed(1)}`)
-        el.style.setProperty('--fig-w', `${Math.min(100, box[2] * pt.width / colWidth * 100).toFixed(1)}%`)
+  async decorate(doc: Document) {
+    for (const el of doc.querySelectorAll<HTMLElement>('[data-fig]')) {
+      for (const fig of el.dataset.fig!.split(' ')) {
+        if (this.#destroyed || !doc.defaultView) return
+        const m = fig.match(/^([ba])(\d+):(.+)$/)
+        if (!m) continue
+        const url = await this.#crop(Number(m[2]), m[3].split(',').map(Number) as Rect4)
+        if (url) el.style.setProperty(`--fig-${m[1]}`, `url("${url}")`)
       }
     }
   }
 
-  /** Hides text inside figures and picks the element each figure is drawn next to. */
-  #place(doc: Document, pt: PageText, regions: Rect4[]) {
-    const inside = (run: Run, [x, y, w, h]: Rect4) => {
-      const cx = (run.x0 + run.x1) / 2 / pt.width
-      const cy = (run.top + run.bottom) / 2 / pt.height
-      return cx >= x - 0.004 && cx <= x + w + 0.004 && cy >= y - 0.004 && cy <= y + h + 0.004
-    }
-    const blocks = new Map<HTMLElement, { top: number; x0: number; x1: number }>()
-    for (const span of doc.querySelectorAll<HTMLElement>(`[data-k^="${pt.page}."]`)) {
-      const run = pt.runs[Number(span.dataset.k!.split('.')[1])]
-      if (!run) continue
-      if (regions.some(r => inside(run, r))) {
-        span.classList.add('fig-x')
-        continue
-      }
-      // a paragraph continued from the previous page: figures go at this page's marker
-      const block = span.closest<HTMLElement>('body > *')
-      const marker = block?.querySelector<HTMLElement>(`#p${pt.page}.pg`)
-      const el = marker && block?.getAttribute('data-p') !== String(pt.page) ? marker : block
-      if (!el) continue
-      const b = blocks.get(el)
-      const top = run.top / pt.height
-      if (!b) blocks.set(el, { top, x0: run.x0 / pt.width, x1: run.x1 / pt.width })
-      else Object.assign(b, { top: Math.min(b.top, top), x0: Math.min(b.x0, run.x0 / pt.width), x1: Math.max(b.x1, run.x1 / pt.width) })
-    }
-    const list = [...blocks.entries()]
-    const placed = new Map<string, { el: HTMLElement; where: 'before' | 'after'; box: Rect4 }>()
-    for (const r of regions) {
-      const bottom = r[1] + r[3] - 0.01
-      const below = list.filter(([, b]) => b.top >= bottom)
-      const hit = below.find(([, b]) => b.x1 > r[0] && b.x0 < r[0] + r[2]) ?? below[0]
-      const el = hit?.[0] ?? list[list.length - 1]?.[0] ?? doc.getElementById(`p${pt.page}`)
-      if (!el) continue
-      const where = hit || !list.length ? 'before' : 'after'
-      const key = `${list.findIndex(([e]) => e === el)}:${where}`
-      const prev = placed.get(key)
-      if (!prev) placed.set(key, { el, where, box: r })
-      else {
-        // figures that land in the same place become one image
-        const [x, y, w, h] = prev.box
-        const x0 = Math.min(x, r[0])
-        const y0 = Math.min(y, r[1])
-        prev.box = [x0, y0, Math.max(x + w, r[0] + r[2]) - x0, Math.max(y + h, r[1] + r[3]) - y0]
-      }
-    }
-    return [...placed.values()]
-  }
-
-  /** Areas of a page covered by images or vector drawings, found in its operator list. */
-  #figureRegions(n: number) {
-    let p = this.#regions.get(n)
-    if (!p) {
-      p = this.#findRegions(n)
-      this.#regions.set(n, p)
-    }
-    return p
-  }
-
-  async #findRegions(n: number): Promise<Rect4[]> {
+  /** Reads a page's drawing operators: the styles of its fonts and the areas covered by images or vector drawings. */
+  async #readOps(n: number): Promise<{ styles: FontStyles; regions: Rect4[] }> {
     const [page, pt] = await Promise.all([this.#doc.getPage(n), this.#page(n)])
     const { fnArray, argsArray } = await page.getOperatorList()
+    // fonts reach the page's shared objects along with its operators
+    const styles: FontStyles = new Map()
+    for (const id of new Set(pt.runs.map(r => r.font)))
+      if (page.commonObjs.has(id)) styles.set(id, fontStyle(page.commonObjs.get(id)))
     const { OPS, Util } = pdfjsLib
     const W = pt.width
     const H = pt.height
@@ -808,7 +1201,7 @@ export class PdfFlow {
       else if (fn === OPS.constructPath && args?.[0] !== OPS.endPath && args?.[2]) add(Array.from(args[2] as ArrayLike<number>), false)
     }
     page.cleanup()
-    if (!pt.runs.length) return boxes.length ? [[0, 0, 1, 1]] : []
+    if (!pt.runs.length) return { styles, regions: boxes.length ? [[0, 0, 1, 1]] : [] }
 
     // cluster on a coarse grid; full-page backgrounds and thin rules don't count
     const GX = 60
@@ -855,7 +1248,7 @@ export class PdfFlow {
         g.box = [x0, y0, Math.max(x + w, r[0] + r[2]) - x0, Math.max(y + h, r[1] + r[3]) - y0]
       }
     })
-    return groups.flatMap(({ box, images, paths }) => {
+    const regions = groups.flatMap(({ box, images, paths }) => {
       if (!box || (!images && paths < 3) || box[2] < 0.06 || box[3] < 0.03) return []
       if (box[1] + box[3] < 0.07 || box[1] > 0.93) return []
       // boxes full of text are shaded paragraphs or tables, not figures
@@ -890,6 +1283,7 @@ export class PdfFlow {
       const pad = 0.006
       return [[Math.max(0, x0 - pad), Math.max(0, y0 - pad), Math.min(1, x1 - x0 + 2 * pad), Math.min(1, y1 - y0 + 2 * pad)] as Rect4]
     })
+    return { styles, regions }
   }
 
   /** Renders part of a page to an image URL. */

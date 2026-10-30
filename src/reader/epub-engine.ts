@@ -146,6 +146,10 @@ export class EpubEngine implements ReaderEngine {
     return s
   }
   protected onDocumentLoad(_doc: Document, _index: number) {}
+  /** The style sheet laid over every section. */
+  protected bookStyles(s: Settings, theme: ReaderTheme) {
+    return bookCss(s, theme)
+  }
 
   async open(container: HTMLElement, location?: string) {
     this.#container = container
@@ -239,7 +243,7 @@ export class EpubEngine implements ReaderEngine {
       r.setAttribute('max-column-count', String(s.columns))
       r.toggleAttribute('animated', s.animated)
     }
-    r.setStyles?.(bookCss(s, t))
+    r.setStyles?.(this.bookStyles(s, t))
     if (prevDark !== t.dark) this.#redrawAnnotations()
     this.#updateMarginals()
   }
