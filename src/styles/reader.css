@@ -273,6 +273,9 @@
 .pdf-scroller .canvasWrapper { filter: var(--pdf-filter, none); }
 .pdf-dark .pdf-scroller .pdfViewer .page { background-color: #1f1f22; box-shadow: 0 0 0 1px rgba(255, 255, 255, .05); }
 .pdf-scroller .textLayer ::selection { background: rgba(80, 140, 255, .32); }
+/* empty space beside lines of text, where a selection snaps to the line's start or end (fillTextLayer) */
+.pdf-scroller .textLayer .lumen-gap { transform: none; }
+.pdf-scroller .textLayer :is(.lumen-gap, br)::selection { background: transparent; }
 .pdf-scroller .textLayer .highlight { background-color: rgba(255, 190, 40, .45); }
 .pdf-scroller .textLayer .highlight.selected { background-color: rgba(255, 130, 20, .6); }
 .lumen-hl-layer { position: absolute; inset: 0; pointer-events: none; mix-blend-mode: multiply; }

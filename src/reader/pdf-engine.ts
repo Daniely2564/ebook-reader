@@ -30,6 +30,121 @@ const normalize = (s: string) => s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLo
 const clampScale = (s: number) => Math.min(MAX_SCALE, Math.max(MIN_SCALE, s))
 const percentile = (xs: number[], p: number) => [...xs].sort((a, b) => a - b)[Math.min(xs.length - 1, Math.floor(xs.length * p))]
 
+/**
+ * Rectangles of the text a range selects in the text layers. The range's own rectangles
+ * also take in every element it spans, which across a page break are whole pages.
+ */
+const textRects = (range: Range) => {
+  const root = range.commonAncestorContainer
+  const nodes: Node[] = []
+  if (root.nodeType === Node.TEXT_NODE) nodes.push(root)
+  else {
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT)
+    while (walker.nextNode()) {
+      const node = walker.currentNode
+      if (range.comparePoint(node, 0) > 0) break
+      if (range.intersectsNode(node)) nodes.push(node)
+    }
+  }
+  const part = document.createRange()
+  return nodes.flatMap(node => {
+    if (!node.parentElement?.closest('.textLayer')) return []
+    part.selectNodeContents(node)
+    if (node === range.startContainer) part.setStart(node, range.startOffset)
+    if (node === range.endContainer) part.setEnd(node, range.endOffset)
+    return part.collapsed ? [] : Array.from(part.getClientRects())
+  })
+}
+
+/** Screen rectangle of the text of a text layer span (its box also covers the space around it, see `fillTextLayer()`). */
+const spanTextRect = (span: Element) => {
+  const range = document.createRange()
+  range.selectNodeContents(span)
+  return range.getBoundingClientRect()
+}
+
+/**
+ * Covers the empty space around the text of a page so a selection dragged through it
+ * ends where it would on an ordinary page. The browser otherwise places a point that
+ * isn't over a word anywhere in the page's text, often lines away from the pointer (or
+ * from the selection handle under a finger). The words of each line reach up and down
+ * to meet the lines above and below, so a point between lines selects the letter under
+ * it, and empty elements beside the line and between its words, placed next to its
+ * first or last word in the text, make a point there select to the start or end of the
+ * line.
+ */
+const fillTextLayer = (layer: HTMLElement) => {
+  for (const el of layer.querySelectorAll('.lumen-gap')) el.remove()
+  const spans = [...layer.querySelectorAll<HTMLElement>('span[role="presentation"]')]
+  for (const { style } of spans) style.lineHeight = style.paddingTop = style.paddingBottom = style.marginTop = ''
+  const box = layer.getBoundingClientRect()
+  if (box.width < 1 || box.height < 1) return
+  type Word = { el: HTMLElement; r: DOMRect }
+  type Line = { words: Word[]; left: number; right: number; top: number; bottom: number }
+  // lines: words in text order that stay on one row, moving right
+  const lines: Line[] = []
+  for (const el of spans) {
+    if (!el.textContent || el.style.getPropertyValue('--rotate')) continue
+    const r = el.getBoundingClientRect()
+    if (r.width <= 0 || r.height <= 0) continue
+    const line = lines[lines.length - 1]
+    const mid = (r.top + r.bottom) / 2
+    if (line && mid > line.top && mid < line.bottom && r.left > line.right - r.height) {
+      line.words.push({ el, r })
+      line.left = Math.min(line.left, r.left)
+      line.right = Math.max(line.right, r.right)
+      line.top = Math.min(line.top, r.top)
+      line.bottom = Math.max(line.bottom, r.bottom)
+    } else lines.push({ words: [{ el, r }], left: r.left, right: r.right, top: r.top, bottom: r.bottom })
+  }
+  // each line's share of the page: halfway to the lines above and below it (in its
+  // column) and to those beside it (in the next column), or to the edge of the page
+  const bands = lines.map(l => {
+    const band = { left: box.left, right: box.right, top: box.top, bottom: box.bottom }
+    for (const o of lines) {
+      if (o === l) continue
+      if (Math.min(o.right, l.right) > Math.max(o.left, l.left)) {
+        if (o.bottom <= l.top) band.top = Math.max(band.top, (o.bottom + l.top) / 2)
+        else if (o.top >= l.bottom) band.bottom = Math.min(band.bottom, (l.bottom + o.top) / 2)
+      } else if (Math.min(o.bottom, l.bottom) > Math.max(o.top, l.top)) {
+        if (o.right <= l.left) band.left = Math.max(band.left, (o.right + l.left) / 2)
+        else if (o.left >= l.right) band.right = Math.min(band.right, (l.right + o.left) / 2)
+      }
+    }
+    return band
+  })
+  const pct = (v: number, size: number) => `${(v / size * 100).toFixed(3)}%`
+  const gap = (x0: number, x1: number, band: (typeof bands)[number]) => {
+    const el = document.createElement('span')
+    el.className = 'lumen-gap'
+    Object.assign(el.style, {
+      left: pct(x0 - box.left, box.width), width: pct(x1 - x0, box.width),
+      top: pct(band.top - box.top, box.height), height: pct(band.bottom - band.top, box.height),
+    })
+    return el
+  }
+  lines.forEach((l, i) => {
+    const band = bands[i]
+    // a span is 1em high, so its height converts pixels to ems, which follow the zoom.
+    // A point in a span's line box selects the letter under it, one in its padding the
+    // span's start or end; the line box grows evenly, so only as far as the nearer edge.
+    for (const { el, r } of l.words) {
+      const up = (r.top - band.top) / r.height
+      const down = (band.bottom - r.bottom) / r.height
+      const grow = Math.min(up, down, 1)
+      el.style.lineHeight = String(1 + 2 * grow)
+      el.style.paddingTop = `${up - grow}em`
+      el.style.marginTop = `${-up}em`
+      el.style.paddingBottom = `${down - grow}em`
+    }
+    const byX = [...l.words].sort((a, b) => a.r.left - b.r.left)
+    for (let k = 1; k < byX.length; k++)
+      if (byX[k].r.left - byX[k - 1].r.right > 0.5) byX[k - 1].el.after(gap(byX[k - 1].r.right, byX[k].r.left, band))
+    if (l.left - band.left > 0.5) l.words[0].el.before(gap(band.left, l.left, band))
+    if (band.right - l.right > 0.5) l.words[l.words.length - 1].el.after(gap(l.right, band.right, band))
+  })
+}
+
 export class PdfEngine implements ReaderEngine {
   readonly kind = 'pdf' as const
   toc: TocItem[] = []
@@ -124,6 +239,9 @@ export class PdfEngine implements ReaderEngine {
       findController,
       removePageBorders: true,
       textLayerMode: 1,
+      // the browser paints the selection: pdf.js would paint every element it spans,
+      // including the space around the lines (see fillTextLayer)
+      enableSelectionRendering: false,
       annotationMode: pdfjsLib.AnnotationMode.ENABLE_FORMS,
       supportsPinchToZoom: true,
       enableAutoLinking: true,
@@ -155,7 +273,12 @@ export class PdfEngine implements ReaderEngine {
     })
     eventBus.on('scalechanging', () => this.#emitRelocate())
     eventBus.on('pagerendered', ({ pageNumber }: { pageNumber: number }) => this.#drawPage(pageNumber))
-    eventBus.on('textlayerrendered', ({ pageNumber }: { pageNumber: number }) => this.#drawPage(pageNumber))
+    eventBus.on('textlayerrendered', ({ pageNumber }: { pageNumber: number }) => {
+      const div: HTMLElement | undefined = viewer.getPageView(pageNumber - 1)?.div
+      const layer = div?.querySelector<HTMLElement>(':scope > .textLayer')
+      if (layer) fillTextLayer(layer)
+      this.#drawPage(pageNumber)
+    })
 
     const sig = { signal: this.#abort.signal }
     scroller.addEventListener('pointerdown', e => {
@@ -340,10 +463,11 @@ export class PdfEngine implements ReaderEngine {
     }
     const loc = parsePdfLocator(target)
     if (loc) {
-      const [, y] = loc.r[0] ?? [0, 0]
-      const view = this.#viewer.getPageView(loc.p - 1)
+      const part = locatorParts(loc).find(x => x.r.length) ?? loc
+      const [, y] = part.r[0] ?? [0, 0]
+      const view = this.#viewer.getPageView(part.p - 1)
       const height = (view?.viewport?.viewBox?.[3] ?? 792)
-      await this.#keepLeft(() => this.#viewer.scrollPageIntoView({ pageNumber: loc.p, destArray: [null, { name: 'XYZ' }, null, height * (1 - y) + 24, null] }))
+      await this.#keepLeft(() => this.#viewer.scrollPageIntoView({ pageNumber: part.p, destArray: [null, { name: 'XYZ' }, null, height * (1 - y) + 24, null] }))
       return
     }
     const where = this.#parseLocation(target)
@@ -567,7 +691,7 @@ export class PdfEngine implements ReaderEngine {
   #columnAt(x: number, y: number) {
     const hit = this.#pageAt(x, y)
     if (!hit) return null
-    const rects = Array.from(hit.el.querySelectorAll('.textLayer span[role="presentation"]'), s => s.getBoundingClientRect())
+    const rects = Array.from(hit.el.querySelectorAll('.textLayer span[role="presentation"]'), spanTextRect)
       .filter(r => r.width > 1 && r.height > 1)
       .sort((a, b) => a.top - b.top)
     // runs on one line, split where the gap is wide enough to be a column gutter
@@ -696,9 +820,9 @@ export class PdfEngine implements ReaderEngine {
     const range = sel.getRangeAt(0)
     const text = sel.toString().replace(/\s+/g, ' ').trim()
     if (!text) return
-    // collect selection rectangles per page, normalized to the page size
+    // collect the selected text's rectangles per page, normalized to the page size
     const byPage = new Map<number, Rect4[]>()
-    for (const cr of Array.from(range.getClientRects())) {
+    for (const cr of textRects(range)) {
       if (cr.width < 1 || cr.height < 1) continue
       const hit = this.#pageAt(cr.left + cr.width / 2, cr.top + cr.height / 2)
       if (!hit) continue

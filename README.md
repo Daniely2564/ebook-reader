@@ -78,7 +78,7 @@ npm run android:apk        # build web app → sync → android/app/build/output
 npm run android:open       # open the project in Android Studio
 ```
 
-For a signed release build, set `LUMEN_KEYSTORE`, `LUMEN_KEYSTORE_PASSWORD`, `LUMEN_KEY_ALIAS` and `LUMEN_KEY_PASSWORD`, then run `npm run android:release`. The app registers as a handler for ebook and PDF files ("Open with Lumen Reader"), keeps the screen on while reading, and hides the system bars in the reader.
+For a signed release build, set `LUMEN_KEYSTORE`, `LUMEN_KEYSTORE_PASSWORD`, `LUMEN_KEY_ALIAS` and `LUMEN_KEY_PASSWORD`, then run `npm run android:release`. The app registers as a handler for ebook and PDF files ("Open with Lumen Reader"), keeps the screen on while reading, and hides the system bars in the reader. The page always fills the screen behind the system bars (`MainActivity` gives it their size as `--safe-area-inset-*` CSS variables, in place of Capacitor's handling), so showing and hiding them doesn't lay the book out again.
 
 #### Download the APK from GitHub Actions
 
@@ -177,6 +177,7 @@ src/
 tests/smoke.mjs            end-to-end test
 tests/sync.mjs             end-to-end sync test (two devices, fake Google Drive)
 tests/dotion.mjs           end-to-end Send to Dotion test (fake Dotion API)
+tests/pdf.mjs              end-to-end test of selecting and highlighting in a PDF
 ```
 
 ## Licenses

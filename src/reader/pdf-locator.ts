@@ -22,8 +22,15 @@ export const parsePdfLocator = (s: string): PdfLocator | null => {
   }
 }
 
+/**
+ * No line of text is this tall, as a share of the page height. Highlights made in the
+ * page view before only text was measured can hold the rectangles of whole pages.
+ */
+const MAX_LINE_HEIGHT = 0.2
+
 /** Every page of a highlight with its rectangles, in page order. */
-export const locatorParts = (loc: PdfLocator): PdfPart[] => [{ p: loc.p, r: loc.r }, ...(loc.next ?? [])]
+export const locatorParts = (loc: PdfLocator): PdfPart[] =>
+  [{ p: loc.p, r: loc.r }, ...(loc.next ?? [])].map(({ p, r }) => ({ p, r: r.filter(x => x[3] < MAX_LINE_HEIGHT) }))
 
 /** A locator from the rectangles found on each page (pages without any are left out). */
 export const makePdfLocator = (byPage: Map<number, Rect4[]>): PdfLocator | null => {

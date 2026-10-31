@@ -29,7 +29,7 @@
     "android:open": "cap open android",
     "android:apk": "npm run android:sync && node scripts/gradle.mjs assembleDebug",
     "android:release": "npm run android:sync && node scripts/gradle.mjs assembleRelease",
-    "test:e2e": "npm run build && node tests/smoke.mjs && node tests/sync.mjs && node tests/dotion.mjs",
+    "test:e2e": "npm run build && node tests/smoke.mjs && node tests/sync.mjs && node tests/dotion.mjs && node tests/pdf.mjs",
     "icons": "node scripts/generate-icons.mjs"
   },
   "dependencies": {
