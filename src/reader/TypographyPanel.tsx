@@ -14,7 +14,7 @@ const ZOOM_FITS: { value: string; action: ZoomAction; label: string; title: stri
   { value: 'text-width', action: 'fit-text', label: 'Text', title: 'Fit the text, trimming the margins' },
 ]
 
-export const TypographyPanel = ({ open, onClose, kind, pdfView, onPdfView, onZoom, zoomLabel, zoomMode }: {
+export const TypographyPanel = ({ open, onClose, kind, pdfView, onPdfView, onZoom, zoomLabel, zoomMode, locked, onLock }: {
   open: boolean
   onClose: () => void
   kind: 'reflowable' | 'pdf'
@@ -24,6 +24,9 @@ export const TypographyPanel = ({ open, onClose, kind, pdfView, onPdfView, onZoo
   onZoom?: (a: ZoomAction) => void
   zoomLabel?: string
   zoomMode?: string
+  /** set for PDF pages: whether the zoom and place on the page are locked */
+  locked?: boolean
+  onLock?: () => void
 }) => {
   const s = useSettings()
   useEffect(() => {
@@ -143,6 +146,10 @@ export const TypographyPanel = ({ open, onClose, kind, pdfView, onPdfView, onZoo
                 onZoom?.(fit.action)
               }} options={ZOOM_FITS.map(z => ({ value: z.value, label: z.label, title: z.title }))} />
               <p className="typo-hint">Pinch to zoom, or double-tap a column to zoom into it. Each PDF keeps its zoom and position.</p>
+              {locked != null && (
+                <Switch label="Lock zoom & position" checked={locked} onChange={() => onLock?.()}
+                  hint="Frame the text the way you like, then lock it. Tapping the right edge reads down the page (and down the next column), then opens the next page at the same spot and zoom." />
+              )}
 
               <div className="typo-section">Pages</div>
               <div className="typo-row">

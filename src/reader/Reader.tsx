@@ -1,4 +1,4 @@
-import { ArrowLeft, Bookmark, Ellipsis, Expand, FileText, Headphones, Keyboard, ListTree, Maximize, Minimize, Minus, NotebookPen, Plus, Search, Settings2, Shrink, TextWrap, Type, Undo2 } from 'lucide-react'
+import { ArrowLeft, Bookmark, Ellipsis, Expand, FileText, Headphones, Keyboard, ListTree, Lock, LockOpen, Maximize, Minimize, Minus, NotebookPen, Plus, Search, Settings2, Shrink, TextWrap, Type, Undo2 } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { SystemBars, SystemBarsStyle } from '@capacitor/core'
 import { compare as compareCFI } from '../vendor/foliate-js/epubcfi.js'
@@ -17,7 +17,7 @@ import { ReadAloudBar } from './ReadAloudBar'
 import { SidePanel, type PanelTab } from './SidePanel'
 import type { Rect } from './text'
 import { TypographyPanel } from './TypographyPanel'
-import type { EngineCallbacks, ReaderEngine, Relocation, SelectionInfo, TapZone } from './types'
+import type { EngineCallbacks, ReaderEngine, Relocation, SelectionInfo, TapZone, ViewLock } from './types'
 
 const VIEW_KEYS: (keyof Settings)[] = ['theme', 'font', 'fontSize', 'fontWeight', 'lineHeight', 'paragraphSpacing', 'letterSpacing', 'justify', 'hyphenate',
   'overrideColors', 'margin', 'maxWidth', 'flow', 'columns', 'animated', 'runningHeads', 'pdfThemed', 'pdfScroll', 'pdfSpread', 'pdfZoom']
@@ -76,6 +76,12 @@ const useSteadyInsets = () => {
   return insets
 }
 
+/** A locked PDF view saved with the book, if it is one. */
+const savedLock = (v: unknown): ViewLock | null => {
+  const l = v as ViewLock | null | undefined
+  return l && [l.scale, l.left, l.top].every(Number.isFinite) && l.scale > 0 ? l : null
+}
+
 export const Reader = ({ bookId, target, from }: { bookId: string; target?: string; from?: Exclude<Route, { name: 'reader' }> }) => {
   const settings = useSettings()
   const go = useApp(s => s.go)
@@ -102,6 +108,8 @@ export const Reader = ({ bookId, target, from }: { bookId: string; target?: stri
   const [help, setHelp] = useState(false)
   const [fullscreen, setFullscreen] = useState(false)
   const [clock, setClock] = useState(() => new Date())
+  /** the PDF view is locked to a zoom and a place on the page */
+  const [locked, setLocked] = useState(false)
 
   const readAloud = useRef<ReadAloud | null>(null)
   const lastActivity = useRef(Date.now())
@@ -325,6 +333,7 @@ export const Reader = ({ bookId, target, from }: { bookId: string; target?: stri
       lastActivity.current = Date.now()
     },
     onViewChange: view => {
+      if ('pdfLock' in view) setLocked(!!view.pdfLock)
       updateBook(bookId, b => ({ view: { ...b.view, ...view } })).catch(() => {})
     },
     onError: msg => toast(msg, 'error'),
@@ -364,7 +373,7 @@ export const Reader = ({ bookId, target, from }: { bookId: string; target?: stri
         const zoom = rec.view?.pdfZoom
         eng = rec.view?.pdfMode === 'flow'
           ? new (await import('./pdf-flow-engine')).PdfFlowEngine(data, rec.title, callbacks)
-          : new (await import('./pdf-engine')).PdfEngine(data, callbacks, { zoom: typeof zoom === 'string' ? zoom : undefined })
+          : new (await import('./pdf-engine')).PdfEngine(data, callbacks, { zoom: typeof zoom === 'string' ? zoom : undefined, lock: savedLock(rec.view?.pdfLock) })
       }
       if (cancelled) return
       eng.applySettings(getSettings())
@@ -396,6 +405,7 @@ export const Reader = ({ bookId, target, from }: { bookId: string; target?: stri
       if (cancelled) return
       setAnnotations(anns)
       setEngine(eng)
+      setLocked(!!eng.viewLocked)
       opened.current = true
       updateBook(bookId, { lastReadAt: Date.now() })
       stageRef.current?.querySelector<HTMLElement>('.pdf-scroller')?.focus({ preventScroll: true })
@@ -431,6 +441,14 @@ export const Reader = ({ bookId, target, from }: { bookId: string; target?: stri
   useEffect(() => {
     engine?.setAnnotations(annotations)
   }, [engine, annotations])
+
+  /** Locks the PDF's zoom and place on the page, so each page opens the same way, or unlocks it. */
+  const toggleLock = () => {
+    if (!engine?.lockView) return
+    const on = engine.lockView(!locked)
+    setLocked(on)
+    if (on !== locked) toast(on ? `View locked at ${engine.zoomLabel}: each page opens at this spot` : 'View unlocked', 'info')
+  }
 
   // a sync brought changes from another device
   const syncVersion = useApp(s => s.syncVersion)
@@ -635,6 +653,7 @@ export const Reader = ({ bookId, target, from }: { bookId: string; target?: stri
       case 'b': toggleBookmark(); break
       case 'a': setPanel(p => ({ ...p, open: false })); setTypo(v => !v); break
       case 'v': if (!pdfBook) return; switchPdfView(!pdfFlow); break
+      case 'z': if (!engine.lockView) return; toggleLock(); break
       case 'f': toggleFullscreen(); break
       case 'r': toggleReadAloud(); break
       case '?': setHelp(true); break
@@ -723,6 +742,11 @@ export const Reader = ({ bookId, target, from }: { bookId: string; target?: stri
           <IconButton className="wide-only" label="Read aloud (R)" active={tts !== 'idle'} onClick={toggleReadAloud}><Headphones size={20} /></IconButton>
           <IconButton className="wide-only" label="Appearance (A)" active={typo} onClick={() => { setPanel(p => ({ ...p, open: false })); setTypo(v => !v) }}><Type size={20} /></IconButton>
           <IconButton className="wide-only" label={fullscreen ? 'Exit full screen (F)' : 'Full screen (F)'} onClick={() => toggleFullscreen()}>{fullscreen ? <Minimize size={19} /> : <Maximize size={19} />}</IconButton>
+          {engine?.lockView && (
+            <IconButton label={locked ? 'Unlock the view (Z)' : 'Lock zoom & position (Z)'} active={locked} onClick={toggleLock}>
+              {locked ? <Lock size={19} /> : <LockOpen size={19} />}
+            </IconButton>
+          )}
           {pdfBook && (
             <IconButton label={pdfFlow ? 'Show original pages (V)' : 'Show as flowing text (V)'} active={pdfFlow} onClick={() => switchPdfView(!pdfFlow)}>
               <TextWrap size={20} />
@@ -789,7 +813,8 @@ export const Reader = ({ bookId, target, from }: { bookId: string; target?: stri
 
       <TypographyPanel open={typo} onClose={() => setTypo(false)} kind={engine?.kind ?? (pdfBook && !pdfFlow ? 'pdf' : 'reflowable')}
         pdfView={pdfBook ? (pdfFlow ? 'flow' : 'pages') : undefined} onPdfView={v => switchPdfView(v === 'flow')}
-        onZoom={a => engine?.zoom?.(a)} zoomLabel={engine?.zoomLabel} zoomMode={engine?.zoomMode} />
+        onZoom={a => engine?.zoom?.(a)} zoomLabel={engine?.zoomLabel} zoomMode={engine?.zoomMode}
+        locked={engine?.lockView ? locked : undefined} onLock={toggleLock} />
 
       {selection && (
         <SelectionMenu rect={selection.rect} canHighlight={!!selection.locator}
@@ -870,6 +895,7 @@ export const Reader = ({ bookId, target, from }: { bookId: string; target?: stri
             ['B', 'Bookmark page'],
             ['A', 'Appearance'],
             ...(pdfBook ? [['V', 'Flowing text / original pages']] : []),
+            ...(engine?.lockView ? [['Z', 'Lock zoom & position on every page']] : []),
             ['R', 'Read aloud'],
             ['F', 'Full screen'],
             [`${modKey} + / −`, isPdf ? 'Zoom in / out' : 'Larger / smaller text'],

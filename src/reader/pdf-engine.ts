@@ -1,6 +1,7 @@
 // PDF rendering with pdf.js' PDFViewer: continuous or paged scrolling, spreads,
 // pinch / double-tap / ctrl-wheel zoom, "fit text" zoom that trims margins,
-// selectable text, themed pages and highlights.
+// a locked view that reads every page from the same place, selectable text,
+// themed pages and highlights.
 import 'pdfjs-dist/legacy/web/pdf_viewer.css'
 import type { PDFDocumentProxy } from 'pdfjs-dist/legacy/build/pdf.mjs'
 import type { EventBus, PDFLinkService, PDFViewer } from 'pdfjs-dist/legacy/web/pdf_viewer.mjs'
@@ -10,7 +11,7 @@ import type { Settings } from '../lib/settings'
 import { HIGHLIGHT_COLORS, themeById, type ReaderTheme } from '../lib/themes'
 import { locatorParts, makePdfLocator, parsePdfLocator, type Rect4 } from './pdf-locator'
 import { contextSentence, type Rect } from './text'
-import type { EngineCallbacks, ReaderEngine, SearchHit, SpeechChunk, TocItem, ZoomAction } from './types'
+import type { EngineCallbacks, ReaderEngine, SearchHit, SpeechChunk, TocItem, ViewLock, ZoomAction } from './types'
 
 // pdf.js ScrollMode / SpreadMode values
 const ScrollMode = { VERTICAL: 0, PAGE: 3 }
@@ -22,6 +23,8 @@ const MAX_SCALE = 10
 const TEXT_PAD = 10
 /** in page-by-page mode, a page scrolled to within this many pixels of its end counts as read */
 const PAGE_SLACK = 80
+/** with the view locked, how much of the screen a step down the page keeps from the screen before */
+const LOCK_OVERLAP = 0.07
 
 /** A place on a page; left / top are in PDF user space, as in `pdf:<page>@<left>,<top>` */
 interface Place { page: number; left: number | null; top: number | null }
@@ -197,10 +200,18 @@ export class PdfEngine implements ReaderEngine {
   #hud: HTMLDivElement | null = null
   #hudTimer: ReturnType<typeof setTimeout> | null = null
 
-  constructor(data: Uint8Array, cb: EngineCallbacks, opts: { zoom?: string } = {}) {
+  // locked view
+  #lock: ViewLock | null = null
+  #initialLock: ViewLock | null
+  #relockTimer: ReturnType<typeof setTimeout> | null = null
+  /** where the last step went, while its smooth scroll may still be on the way */
+  #lockTarget: { page: number; col: number; row: number; until: number } | null = null
+
+  constructor(data: Uint8Array, cb: EngineCallbacks, opts: { zoom?: string; lock?: ViewLock | null } = {}) {
     this.#data = data
     this.#cb = cb
     this.#initialZoom = this.#savedZoom = opts.zoom
+    this.#initialLock = opts.lock ?? null
   }
 
   get zoomLabel() {
@@ -322,8 +333,10 @@ export class PdfEngine implements ReaderEngine {
     if (this.#settings) this.applySettings(this.#settings)
     const preset = this.#settings?.pdfZoom ?? 'auto'
     this.#restZoom = Number(preset) > 0 ? 'auto' : preset
-    await this.#applyZoom(this.#initialZoom ?? preset)
+    const lock = this.#initialLock
+    await this.#applyZoom(lock ? String(lock.scale) : this.#initialZoom ?? preset)
     if (this.#destroyed) return
+    if (lock) this.#lock = { ...lock, scale: this.#viewer.currentScale }
     this.#restore(target)
     this.#loadOutline().catch(e => console.warn('Outline failed', e))
     this.#loadLanguage()
@@ -333,6 +346,7 @@ export class PdfEngine implements ReaderEngine {
     this.#destroyed = true
     this.#abort.abort()
     if (this.#saveZoomTimer) clearTimeout(this.#saveZoomTimer)
+    if (this.#relockTimer) clearTimeout(this.#relockTimer)
     try {
       this.#viewer?.setDocument(null as unknown as PDFDocumentProxy)
       this.#linkService?.setDocument(null, null)
@@ -414,6 +428,7 @@ export class PdfEngine implements ReaderEngine {
   }
   next() {
     if (!this.#ready) return
+    if (this.#lock) return this.#lockStep(1)
     const s = this.#scroller
     // in page-by-page mode a page taller than the screen is read to its end first
     if (!this.#isPaged() || s.scrollHeight - s.scrollTop - s.clientHeight > PAGE_SLACK) s.scrollBy({ top: s.clientHeight * 0.9, behavior: 'smooth' })
@@ -421,12 +436,17 @@ export class PdfEngine implements ReaderEngine {
   }
   prev() {
     if (!this.#ready) return
+    if (this.#lock) return this.#lockStep(-1)
     const s = this.#scroller
     if (!this.#isPaged() || s.scrollTop > PAGE_SLACK) s.scrollBy({ top: -s.clientHeight * 0.9, behavior: 'smooth' })
     else this.#turn(-1)
   }
   /** Turns a page in page-by-page mode, keeping the zoom and the horizontal position. */
   #turn(dir: 1 | -1) {
+    if (this.#lock) {
+      this.#lockGo(this.#viewPage() + dir, dir > 0 ? 'first' : 'last')
+      return
+    }
     const s = this.#scroller
     const left = s.scrollLeft
     if (!(dir > 0 ? this.#viewer.nextPage() : this.#viewer.previousPage())) return
@@ -436,7 +456,8 @@ export class PdfEngine implements ReaderEngine {
   }
   /** pdf.js scrolls to the left edge of a page when jumping; keep the column being read in view instead. */
   #restoreLeft(left: number) {
-    if (this.#zoomMode === 'text-width') this.#alignText()
+    if (this.#lock) this.#lockAlignColumn()
+    else if (this.#zoomMode === 'text-width') this.#alignText()
     else this.#scroller.scrollLeft = left
   }
   async #keepLeft(navigate: () => unknown) {
@@ -445,6 +466,7 @@ export class PdfEngine implements ReaderEngine {
     this.#restoreLeft(left)
   }
   #showPage(n: number) {
+    if (this.#lock && this.#lockGo(n, 'first')) return Promise.resolve()
     return this.#keepLeft(() => {
       this.#viewer.currentPageNumber = n
     })
@@ -523,6 +545,11 @@ export class PdfEngine implements ReaderEngine {
 
   #setZoomMode(mode: string) {
     this.#zoomMode = mode
+    // zooming a locked view moves the lock along with it
+    if (this.#lock) {
+      if (this.#relockTimer) clearTimeout(this.#relockTimer)
+      this.#relockTimer = setTimeout(() => this.#relock(), 350)
+    }
     if (this.#saveZoomTimer) clearTimeout(this.#saveZoomTimer)
     if (mode === this.#savedZoom) return
     this.#saveZoomTimer = setTimeout(() => {
@@ -603,6 +630,194 @@ export class PdfEngine implements ReaderEngine {
     this.#abort.signal.addEventListener('abort', () => ro.disconnect())
   }
 
+  // ---------------------------------------------------------------- locked view
+  // The view is locked to a zoom and a place on the page (its top left corner, as
+  // fractions of the page). Reading steps through the page a screen at a time from
+  // there: down the column; then, when the screen is about half as wide as the text,
+  // down the next column (two-column pages); then on to the same place on the next page.
+  // The text is taken to end as far from the bottom and right edges as the locked place
+  // is from the top and left ones.
+
+  get viewLocked() {
+    return !!this.#lock
+  }
+
+  lockView(on: boolean) {
+    if (!this.#ready) return !!this.#lock
+    if (this.#relockTimer) clearTimeout(this.#relockTimer)
+    this.#lockTarget = null
+    if (!on) this.#lock = null
+    else {
+      const place = this.#viewPlace()
+      if (!place) return !!this.#lock
+      // a numeric zoom, so resizing the window doesn't re-fit it
+      this.#lock = null
+      this.#setZoomMode(String(this.#viewer.currentScale))
+      this.#lock = { scale: this.#viewer.currentScale, left: place.left, top: place.top }
+    }
+    this.#cb.onViewChange?.({ pdfLock: this.#lock })
+    return !!this.#lock
+  }
+
+  /** After zooming a locked view: the new zoom, and the view's place if it is still at the start of the page. */
+  #relock() {
+    const old = this.#lock
+    const place = this.#viewPlace()
+    if (!old || !place) return
+    const s = this.#scroller
+    // past the first screen down (or across), the lock keeps its own start
+    const firstCol = (place.left - old.left) * place.box.width < s.clientWidth / 2
+    const firstRow = (place.top - old.top) * place.box.height < s.clientHeight / 2
+    this.#lock = {
+      scale: this.#viewer.currentScale,
+      left: firstCol ? place.left : old.left,
+      top: firstRow ? place.top : old.top,
+    }
+    this.#lockTarget = null
+    this.#cb.onViewChange?.({ pdfLock: this.#lock })
+  }
+
+  /** The page in the middle of the screen. */
+  #viewPage() {
+    const s = this.#scroller
+    const sr = s.getBoundingClientRect()
+    const x = sr.left + s.clientWidth / 2
+    const y = sr.top + s.clientHeight / 2
+    let page = this.#page
+    let best = Infinity
+    for (const el of s.querySelectorAll<HTMLElement>('.page[data-page-number]')) {
+      const r = el.getBoundingClientRect()
+      if (!r.width || !r.height) continue
+      const d = Math.max(0, r.left - x, x - r.right) + Math.max(0, r.top - y, y - r.bottom)
+      if (d < best) {
+        best = d
+        page = Number(el.dataset.pageNumber)
+      }
+    }
+    return page
+  }
+
+  /** A page's box in the scroller's content (scrollLeft / scrollTop) coordinates, while it is laid out. */
+  #pageBox(n: number) {
+    const div = this.#viewer.getPageView(n - 1)?.div as HTMLElement | undefined
+    if (!div?.isConnected) return null
+    const r = div.getBoundingClientRect()
+    if (!r.width || !r.height) return null
+    const s = this.#scroller
+    const sr = s.getBoundingClientRect()
+    return { left: r.left - sr.left - s.clientLeft + s.scrollLeft, top: r.top - sr.top - s.clientTop + s.scrollTop, width: r.width, height: r.height }
+  }
+
+  /** The page in view and the view's top left corner on it, as fractions of its size. */
+  #viewPlace() {
+    const page = this.#viewPage()
+    const box = this.#pageBox(page)
+    if (!box) return null
+    const s = this.#scroller
+    const round = (v: number) => Math.round(v * 1e4) / 1e4
+    return {
+      page, box,
+      left: round(Math.min(0.95, Math.max(-1, (s.scrollLeft - box.left) / box.width))),
+      top: round(Math.min(0.95, Math.max(-0.1, (s.scrollTop - box.top) / box.height))),
+    }
+  }
+
+  /** Where the view stops on a page with the view locked: the left edges of its columns and the tops of its rows, from the page's corner. */
+  #lockGrid(n: number) {
+    const lock = this.#lock
+    const box = this.#pageBox(n)
+    if (!lock || !box) return null
+    const s = this.#scroller
+    const stops = (start: number, size: number, view: number, from: number, max: number, across: boolean) => {
+      const a0 = start * size
+      // as much space after the text as before it
+      const span = Math.max(view, size - 2 * a0)
+      let count: number
+      // columns are framed on purpose: a screen about half as wide as the text reads two
+      // (a sliver past the screen's edge is margin, or what the reader chose to leave out)
+      if (across) count = Math.max(1, Math.round(span / view))
+      else {
+        const overlap = view * LOCK_OVERLAP
+        count = span <= view * 1.03 ? 1 : Math.ceil((span - overlap) / (view - overlap))
+      }
+      const out: number[] = []
+      for (let i = 0; i < count; i++) {
+        // spread evenly, and only as far as the view can scroll
+        const v = Math.min(max - from, Math.max(-from, a0 + (count > 1 ? i * (span - view) / (count - 1) : 0)))
+        if (!out.length || v - out[out.length - 1] > 2) out.push(v)
+      }
+      return out
+    }
+    return {
+      box,
+      xs: stops(lock.left, box.width, s.clientWidth, box.left, s.scrollWidth - s.clientWidth, true),
+      ys: stops(lock.top, box.height, s.clientHeight, box.top, s.scrollHeight - s.clientHeight, false),
+    }
+  }
+
+  /** Shows a stop on a page: its first, its last, or a given column and row. */
+  #lockGo(n: number, at: 'first' | 'last' | { col: number; row: number }, smooth = false) {
+    if (n < 1 || n > this.#doc.numPages) return false
+    // page by page, only the current page is laid out
+    if (!this.#pageBox(n)) this.#viewer.currentPageNumber = n
+    const grid = this.#lockGrid(n)
+    if (!grid) return false
+    const col = at === 'first' ? 0 : at === 'last' ? grid.xs.length - 1 : Math.min(at.col, grid.xs.length - 1)
+    const row = at === 'first' ? 0 : at === 'last' ? grid.ys.length - 1 : Math.min(at.row, grid.ys.length - 1)
+    this.#scroller.scrollTo({ left: grid.box.left + grid.xs[col], top: grid.box.top + grid.ys[row], behavior: smooth ? 'smooth' : 'instant' })
+    this.#lockTarget = { page: n, col, row, until: performance.now() + (smooth ? 700 : 100) }
+    return true
+  }
+
+  #lockStep(dir: 1 | -1) {
+    const s = this.#scroller
+    const pending = this.#lockTarget && performance.now() < this.#lockTarget.until ? this.#lockTarget : null
+    const page = pending?.page ?? this.#viewPage()
+    const grid = this.#lockGrid(page)
+    if (!grid) {
+      this.#lockGo(page + dir, dir > 0 ? 'first' : 'last')
+      return
+    }
+    const { xs, ys, box } = grid
+    const x = s.scrollLeft - box.left
+    const y = s.scrollTop - box.top
+    const nearest = (stops: number[], v: number) => stops.reduce((best, w, i) => (Math.abs(w - v) < Math.abs(stops[best] - v) ? i : best), 0)
+    const col = pending ? Math.min(pending.col, xs.length - 1) : nearest(xs, x)
+    let row: number
+    if (pending) row = Math.min(pending.row, ys.length - 1) + dir
+    else if (dir > 0) row = ys.findIndex(v => v > y + 2)
+    else row = ys.findLastIndex(v => v < y - 2)
+    if (row >= 0 && row < ys.length) {
+      // further down (or up) the column: mark the edge of the screen before
+      const from = pending ? ys[pending.row] : y
+      this.#lockGo(page, { col, row }, true)
+      this.#markStep(page, dir > 0 ? from + s.clientHeight : from, box.height)
+    } else if (col + dir >= 0 && col + dir < xs.length) this.#lockGo(page, { col: col + dir, row: dir > 0 ? 0 : ys.length - 1 })
+    else this.#lockGo(page + dir, dir > 0 ? 'first' : 'last')
+  }
+
+  /** With the view locked, a jump within a page (to a highlight, say) keeps the column lined up. */
+  #lockAlignColumn() {
+    const page = this.#viewPage()
+    const grid = this.#lockGrid(page)
+    if (!grid) return
+    const x = this.#scroller.scrollLeft - grid.box.left
+    const col = grid.xs.reduce((best, w) => (Math.abs(w - x) < Math.abs(best - x) ? w : best), grid.xs[0])
+    this.#scroller.scrollLeft = grid.box.left + col
+  }
+
+  /** A faint line where the screen before ended, to find the line being read after a step. */
+  #markStep(page: number, y: number, height: number) {
+    const div = this.#viewer.getPageView(page - 1)?.div as HTMLElement | undefined
+    if (!div || y <= 0 || y >= height) return
+    div.querySelector(':scope > .pdf-step-mark')?.remove()
+    const mark = document.createElement('div')
+    mark.className = 'pdf-step-mark'
+    mark.style.top = `${(y / height) * 100}%`
+    div.append(mark)
+    mark.addEventListener('animationend', () => mark.remove(), { once: true })
+  }
+
   // ---------------------------------------------------------------- touch gestures
   #onTouchStart = (e: TouchEvent) => {
     if (e.touches.length === 1) {
@@ -652,11 +867,17 @@ export class PdfEngine implements ReaderEngine {
     const s = this.#swipe
     this.#swipe = null
     const t = e.changedTouches[0]
-    if (!s || !t || e.touches.length || !this.#isPaged()) return
+    if (!s || !t || e.touches.length || !(this.#isPaged() || this.#lock)) return
     const dx = t.clientX - s.x
     const dy = t.clientY - s.y
     if (performance.now() - s.t > 700 || Math.abs(dx) < 50 || Math.abs(dx) < 1.8 * Math.abs(dy)) return
     if (document.getSelection()?.isCollapsed === false) return
+    // a locked view turns at once, from where the swipe started
+    if (this.#lock) {
+      this.#scroller.scrollLeft = s.left
+      this.#lockStep(dx < 0 ? 1 : -1)
+      return
+    }
     // a zoomed page scrolls sideways first; the page turns once it can't scroll further
     const max = this.#scroller.scrollWidth - this.#scroller.clientWidth
     if ((dx < 0 && s.left < max - 1) || (dx > 0 && s.left > 1)) return

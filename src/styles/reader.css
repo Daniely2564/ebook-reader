@@ -283,6 +283,13 @@
 .lumen-hl { position: absolute; border-radius: 2px; opacity: .5; }
 .lumen-hl-layer.dark .lumen-hl { opacity: .38; }
 .lumen-hl-note { position: absolute; width: 8px; height: 8px; border-radius: 50%; transform: translate(1px, -4px); }
+/* with the view locked, where the screen before ended after a step down the page */
+.pdf-step-mark {
+  position: absolute; left: 0; right: 0; height: 0; z-index: 3; pointer-events: none;
+  border-top: 2px dashed rgba(194, 98, 26, .55); animation: pdf-step-mark 1.8s ease-in forwards;
+}
+.pdf-dark .pdf-step-mark { border-top-color: rgba(240, 163, 90, .6); }
+@keyframes pdf-step-mark { 0%, 45% { opacity: 1; } 100% { opacity: 0; } }
 
 .reader-error { position: fixed; inset: 0; display: grid; place-content: center; justify-items: center; gap: 12px; padding: 24px; text-align: center; background: var(--r-bg); color: var(--r-fg); }
 .reader-error h2 { font: 650 24px var(--font-serif); }

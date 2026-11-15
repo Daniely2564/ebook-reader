@@ -58,10 +58,22 @@ export type TapZone = 'left' | 'center' | 'right'
 
 export type ZoomAction = 'in' | 'out' | 'fit-width' | 'fit-page' | 'fit-text' | 'reset'
 
+/**
+ * A PDF view locked in place: the zoom, and where the view's top left corner sits on
+ * the page, as fractions of the page's width and height. Each page then opens there.
+ */
+export interface ViewLock {
+  scale: number
+  left: number
+  top: number
+}
+
 /** Per-book view state the engine wants remembered (stored in BookRecord.view). */
 export interface ViewState {
   /** 'auto' | 'page-width' | 'page-fit' | 'text-width' | a scale such as "1.5" */
   pdfZoom?: string
+  /** the locked view, or null once unlocked */
+  pdfLock?: ViewLock | null
 }
 
 export interface EngineCallbacks {
@@ -106,4 +118,7 @@ export interface ReaderEngine {
   readonly zoomLabel?: string
   /** the current zoom: a fit mode (see ViewState.pdfZoom) or a scale */
   readonly zoomMode?: string
+  /** locks the zoom and the place on the page that every page opens at (PDF); returns whether it is locked */
+  lockView?(on: boolean): boolean
+  readonly viewLocked?: boolean
 }

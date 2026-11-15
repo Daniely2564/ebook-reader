@@ -20,6 +20,7 @@ A calm, fast ebook reader for **desktop (Electron)** and **Android (Capacitor)**
 - 7 themes (Light, Paper, Sepia, Sage, Dusk, Night, Black), plus a brightness dimmer.
 - Typography: 8 bundled fonts (Literata, Source Serif, Merriweather, Inter, Atkinson Hyperlegible, OpenDyslexic, and system fonts), size, weight, line spacing, letter spacing, paragraph spacing, margins, line length, justification and hyphenation.
 - PDF: continuous or page-by-page scrolling, two-page spreads, fit width / page / text (trims the margins), pinch, double-tap (zooms into the column) and Ctrl+wheel zoom, page tinting that follows the theme (sepia, inverted night mode), selectable text. Each PDF remembers its zoom and position, and turning pages keeps the column you're reading in view.
+- **Locked view** for PDFs that can't flow (scans, complex layouts) (`Z`, or the lock button): frame the text the way you want it, at the zoom you want, and lock it. The next page command (a tap on the right edge, a swipe, →) then reads down the page a screen at a time, keeping a little of the screen before and marking where it ended; when the screen is about half as wide as the text, it reads down the left column and then the right one; then it opens the next page at the same place and zoom. Going back retraces the steps. Zooming while locked moves the lock along, and each PDF remembers its lock.
 - **Flowing text** for PDFs (`V`): the PDF's text is rebuilt as an ebook, so it follows your font, size and theme on any screen. Headings (by size or bold), paragraphs, lists, bold and italic words, superscripts and figures are kept; footnotes wait until the paragraph they interrupt ends; title and part pages are centered on a page of their own; paragraphs stay whole across page breaks. Running headers and page numbers are dropped and hyphenated words rejoined. Highlights (even across a page break), bookmarks and your place carry over between flowing text and the original pages.
 - Tap/click zones, swipe, mouse wheel and full keyboard control (press `?` in the reader).
 - Table of contents, full-text search with highlighted results, footnote popups, a "Back to page X" chip after jumps, and reading position restore.
@@ -178,6 +179,7 @@ tests/smoke.mjs            end-to-end test
 tests/sync.mjs             end-to-end sync test (two devices, fake Google Drive)
 tests/dotion.mjs           end-to-end Send to Dotion test (fake Dotion API)
 tests/pdf.mjs              end-to-end test of selecting and highlighting in a PDF
+tests/pdf-lock.mjs         end-to-end test of reading a PDF with the view locked
 ```
 
 ## Licenses
